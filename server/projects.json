@@ -1,0 +1,17 @@
+{
+  "projects": [
+    {
+      "id": "juno",
+      "name": "Juno",
+      "path": "..",
+      "favorite": true
+    }
+  ],
+  "discovery": {
+    "enabled": false,
+    "paths": [
+      ".."
+    ],
+    "maxDepth": 2
+  }
+}
