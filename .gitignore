@@ -35,6 +35,9 @@ server/firebase-debug.log
 # local env files
 .env*.local
 
+# local Copilot workspace config
+.claude/
+
 # typescript
 *.tsbuildinfo
 
