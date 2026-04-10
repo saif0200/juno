@@ -1,50 +1,116 @@
-# Welcome to your Expo app 👋
+# Zev
 
-This is an [Expo](https://expo.dev) project created with [`create-expo-app`](https://www.npmjs.com/package/create-expo-app).
+Zev is a mobile-first Claude Code client built with Expo and a local Node relay server.
 
-## Get started
+The current architecture is:
 
-1. Install dependencies
+- Expo app renders a terminal UI on iOS/Android
+- A local WebSocket relay on your Mac launches and manages Claude Code sessions
+- The phone connects to the relay and streams the live terminal session
 
-   ```bash
-   npm install
-   ```
+## Repository Layout
 
-2. Start the app
-
-   ```bash
-   npx expo start
-   ```
-
-In the output, you'll find options to open the app in a
-
-- [development build](https://docs.expo.dev/develop/development-builds/introduction/)
-- [Android emulator](https://docs.expo.dev/workflow/android-studio-emulator/)
-- [iOS simulator](https://docs.expo.dev/workflow/ios-simulator/)
-- [Expo Go](https://expo.dev/go), a limited sandbox for trying out app development with Expo
-
-You can start developing by editing the files inside the **app** directory. This project uses [file-based routing](https://docs.expo.dev/router/introduction).
-
-## Get a fresh project
-
-When you're ready, run:
-
-```bash
-npm run reset-project
+```text
+.
+├── app/                    Expo Router app
+├── assets/terminal/        Bundled xterm runtime assets for the WebView terminal
+├── server/                 Local Claude relay server
+└── README.md
 ```
 
-This command will move the starter code to the **app-example** directory and create a blank **app** directory where you can start developing.
+## Tech Stack
 
-## Learn more
+Mobile app:
 
-To learn more about developing your project with Expo, look at the following resources:
+- Expo
+- React Native
+- Expo Router
+- react-native-webview
+- xterm.js rendered inside a WebView
 
-- [Expo documentation](https://docs.expo.dev/): Learn fundamentals, or go into advanced topics with our [guides](https://docs.expo.dev/guides).
-- [Learn Expo tutorial](https://docs.expo.dev/tutorial/introduction/): Follow a step-by-step tutorial where you'll create a project that runs on Android, iOS, and the web.
+Relay server:
 
-## Join the community
+- Node.js
+- TypeScript
+- Express
+- ws
+- node-pty
+- local Claude Code CLI
 
-Join our community of developers creating universal apps.
+## How It Works
 
-- [Expo on GitHub](https://github.com/expo/expo): View our open source platform and contribute.
-- [Discord community](https://chat.expo.dev): Chat with Expo users and ask questions.
+1. Start the relay server on your Mac.
+2. The Expo app connects to the relay over WebSocket.
+3. The relay spawns a Claude Code terminal session locally.
+4. The app renders terminal output with xterm inside a WebView.
+5. Keystrokes and resize events are sent back to the relay.
+
+## Running The Relay
+
+Use Node 20 on macOS for the server.
+
+```bash
+cd /Users/saif/Documents/zev/server
+export PATH="/opt/homebrew/opt/node@20/bin:$PATH"
+npm install
+npm run dev
+```
+
+Expected startup:
+
+```text
+Server listening on ws://localhost:3000
+✅ Ready to accept connections
+```
+
+Health check:
+
+```bash
+curl http://localhost:3000/health
+```
+
+## Running The Expo App
+
+```bash
+cd /Users/saif/Documents/zev
+npx expo start -c
+```
+
+Open the app in Expo Go or the iOS simulator, then go to the `Terminal` tab.
+
+On a physical phone, use your Mac's LAN IP for the relay URL, for example:
+
+```text
+ws://192.168.1.25:3000
+```
+
+## Current Status
+
+Implemented:
+
+- local Claude terminal relay
+- reconnectable WebSocket sessions
+- terminal rendering in the Expo app
+- local bundled xterm assets
+
+Not implemented yet:
+
+- authentication
+- persistent session storage
+- project picker and multi-workspace session creation
+- approvals/workflow UI above the raw terminal
+
+## Notes For macOS
+
+`node-pty` may require fixing the bundled macOS helper permissions/signature after install:
+
+```bash
+cd /Users/saif/Documents/zev/server
+chmod +x node_modules/node-pty/prebuilds/darwin-arm64/spawn-helper
+codesign --force --sign - node_modules/node-pty/prebuilds/darwin-arm64/spawn-helper
+find node_modules/node-pty -name "*.node" -exec codesign --force --sign - {} \;
+```
+
+## Server Docs
+
+Detailed relay notes live in [server/README.md](/Users/saif/Documents/zev/server/README.md).
