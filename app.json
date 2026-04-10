@@ -1,11 +1,11 @@
 {
   "expo": {
-    "name": "zev",
-    "slug": "zev",
+    "name": "Juno",
+    "slug": "juno",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
-    "scheme": "zev",
+    "scheme": "juno",
     "userInterfaceStyle": "automatic",
     "newArchEnabled": true,
     "ios": {
@@ -27,6 +27,12 @@
     },
     "plugins": [
       "expo-router",
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "Allow Juno to scan a QR code from your local relay."
+        }
+      ],
       [
         "expo-splash-screen",
         {
