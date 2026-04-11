@@ -1,14 +1,20 @@
 import {
   type CreateSessionRequest,
+  type ListFilesRequest,
   type ProjectDefinition,
+  type ReadFileRequest,
   type ServerMessage,
   type TerminalPersistenceMode,
+  type WorkspaceFileEntry,
+  type WriteFileRequest,
 } from '@/lib/terminal';
 
 const TAB_OUTPUT_LIMIT = 200000;
 const MAX_TAB_COUNT = 6;
 const LIVE_TAB_POOL_SIZE = 3;
 const PROJECT_LIST_TIMEOUT_MS = 5000;
+const FILE_REQUEST_TIMEOUT_MS = 8000;
+const TAB_READY_TIMEOUT_MS = 7000;
 
 type TabConnectionStatus = 'connecting' | 'live' | 'parked' | 'disconnected' | 'exited' | 'error';
 
@@ -42,6 +48,14 @@ type ManagedTab = TerminalTabState & {
   pendingPromotion: boolean;
   cols: number;
   rows: number;
+  pendingFileRequests: Map<
+    string,
+    {
+      timeout: ReturnType<typeof setTimeout>;
+      resolve: (value: unknown) => void;
+      reject: (error: Error) => void;
+    }
+  >;
 };
 
 export type TabsSnapshot = {
@@ -78,6 +92,26 @@ type OpenTabResult = {
 
 type ProjectCatalogResult = {
   projects: ProjectDefinition[];
+  error: string | null;
+};
+
+type ListFilesResult = {
+  entries: WorkspaceFileEntry[];
+  path: string;
+  error: string | null;
+};
+
+type ReadFileResult = {
+  path: string;
+  content: string | null;
+  updatedAt: string | null;
+  error: string | null;
+};
+
+type WriteFileResult = {
+  path: string;
+  updatedAt: string | null;
+  bytes: number;
   error: string | null;
 };
 
@@ -209,6 +243,7 @@ export class TerminalTabsManager {
       pendingPromotion: false,
       cols: 100,
       rows: 28,
+      pendingFileRequests: new Map(),
     };
 
     this.tabs.set(tab.id, tab);
@@ -260,6 +295,7 @@ export class TerminalTabsManager {
       pendingPromotion: false,
       cols: 100,
       rows: 28,
+      pendingFileRequests: new Map(),
     };
 
     this.tabs.set(tab.id, tab);
@@ -476,6 +512,238 @@ export class TerminalTabsManager {
     });
   }
 
+  async listFilesForActive(path = ''): Promise<ListFilesResult> {
+    let active: ManagedTab | null;
+    try {
+      active = await this.waitForActiveSessionReady();
+    } catch (error) {
+      return {
+        entries: [],
+        path,
+        error: error instanceof Error ? error.message : 'Active session is not ready.',
+      };
+    }
+
+    if (!active) {
+      return { entries: [], path, error: 'No active tab.' };
+    }
+
+    const payload: ListFilesRequest = {
+      type: 'list_files',
+      requestId: this.createRequestId(),
+      ...(path ? { path } : {}),
+    };
+
+    try {
+      const response = await this.sendFileRequest<{ type: 'files_list'; requestId: string; path: string; entries: WorkspaceFileEntry[] }>(
+        active,
+        payload,
+      );
+      return {
+        entries: response.entries,
+        path: response.path,
+        error: null,
+      };
+    } catch (error) {
+      return {
+        entries: [],
+        path,
+        error: error instanceof Error ? error.message : 'Failed to list files.',
+      };
+    }
+  }
+
+  async readFileForActive(path: string): Promise<ReadFileResult> {
+    let active: ManagedTab | null;
+    try {
+      active = await this.waitForActiveSessionReady();
+    } catch (error) {
+      return {
+        path,
+        content: null,
+        updatedAt: null,
+        error: error instanceof Error ? error.message : 'Active session is not ready.',
+      };
+    }
+
+    if (!active) {
+      return { path, content: null, updatedAt: null, error: 'No active tab.' };
+    }
+
+    const payload: ReadFileRequest = {
+      type: 'read_file',
+      requestId: this.createRequestId(),
+      path,
+    };
+
+    try {
+      const response = await this.sendFileRequest<{ type: 'file_content'; requestId: string; path: string; content: string; updatedAt: string }>(
+        active,
+        payload,
+      );
+      return {
+        path: response.path,
+        content: response.content,
+        updatedAt: response.updatedAt,
+        error: null,
+      };
+    } catch (error) {
+      return {
+        path,
+        content: null,
+        updatedAt: null,
+        error: error instanceof Error ? error.message : 'Failed to open file.',
+      };
+    }
+  }
+
+  async writeFileForActive(path: string, content: string): Promise<WriteFileResult> {
+    let active: ManagedTab | null;
+    try {
+      active = await this.waitForActiveSessionReady();
+    } catch (error) {
+      return {
+        path,
+        updatedAt: null,
+        bytes: 0,
+        error: error instanceof Error ? error.message : 'Active session is not ready.',
+      };
+    }
+
+    if (!active) {
+      return { path, updatedAt: null, bytes: 0, error: 'No active tab.' };
+    }
+
+    const payload: WriteFileRequest = {
+      type: 'write_file',
+      requestId: this.createRequestId(),
+      path,
+      content,
+    };
+
+    try {
+      const response = await this.sendFileRequest<{ type: 'file_saved'; requestId: string; path: string; updatedAt: string; bytes: number }>(
+        active,
+        payload,
+      );
+      return {
+        path: response.path,
+        updatedAt: response.updatedAt,
+        bytes: response.bytes,
+        error: null,
+      };
+    } catch (error) {
+      return {
+        path,
+        updatedAt: null,
+        bytes: 0,
+        error: error instanceof Error ? error.message : 'Failed to save file.',
+      };
+    }
+  }
+
+  private createRequestId(): string {
+    return `req-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+  }
+
+  private async waitForActiveSessionReady(): Promise<ManagedTab | null> {
+    const active = this.activeTabId ? this.tabs.get(this.activeTabId) : null;
+    if (!active) {
+      return null;
+    }
+
+    if (this.isTabReadyForFileRequests(active)) {
+      return active;
+    }
+
+    const start = Date.now();
+    while (Date.now() - start < TAB_READY_TIMEOUT_MS) {
+      await new Promise((resolve) => setTimeout(resolve, 120));
+      const latestActive = this.activeTabId ? this.tabs.get(this.activeTabId) : null;
+      if (!latestActive) {
+        return null;
+      }
+
+      if (this.isTabReadyForFileRequests(latestActive)) {
+        return latestActive;
+      }
+
+      if (latestActive.status === 'error' || latestActive.status === 'exited') {
+        if (latestActive.lastError?.startsWith('INVALID_MESSAGE:')) {
+          continue;
+        }
+        throw new Error(latestActive.lastError ?? `Active tab is ${latestActive.status}.`);
+      }
+    }
+
+    throw new Error('Active session is not ready yet. Try again in a moment.');
+  }
+
+  private isTabReadyForFileRequests(tab: ManagedTab): boolean {
+    return Boolean(
+      tab.relaySessionId &&
+      tab.status === 'live' &&
+      tab.socket &&
+      tab.socket.readyState === WebSocket.OPEN,
+    );
+  }
+
+  private sendFileRequest<TResponse extends { type: string; requestId: string }>(
+    tab: ManagedTab,
+    payload: ListFilesRequest | ReadFileRequest | WriteFileRequest,
+  ): Promise<TResponse> {
+    if (!tab.socket || tab.socket.readyState !== WebSocket.OPEN) {
+      return Promise.reject(new Error('Socket is not connected.'));
+    }
+
+    return new Promise<TResponse>((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        tab.pendingFileRequests.delete(payload.requestId);
+        reject(new Error('File request timed out.'));
+      }, FILE_REQUEST_TIMEOUT_MS);
+
+      tab.pendingFileRequests.set(payload.requestId, {
+        timeout,
+        resolve: (value) => resolve(value as TResponse),
+        reject,
+      });
+
+      tab.socket?.send(JSON.stringify(payload));
+    });
+  }
+
+  private resolveFileRequest(tab: ManagedTab, requestId: string, value: unknown): boolean {
+    const pending = tab.pendingFileRequests.get(requestId);
+    if (!pending) {
+      return false;
+    }
+
+    clearTimeout(pending.timeout);
+    tab.pendingFileRequests.delete(requestId);
+    pending.resolve(value);
+    return true;
+  }
+
+  private rejectFileRequest(tab: ManagedTab, requestId: string, error: Error): boolean {
+    const pending = tab.pendingFileRequests.get(requestId);
+    if (!pending) {
+      return false;
+    }
+
+    clearTimeout(pending.timeout);
+    tab.pendingFileRequests.delete(requestId);
+    pending.reject(error);
+    return true;
+  }
+
+  private rejectAllPendingFileRequests(tab: ManagedTab, reason: string): void {
+    for (const [requestId, pending] of tab.pendingFileRequests) {
+      clearTimeout(pending.timeout);
+      pending.reject(new Error(reason));
+      tab.pendingFileRequests.delete(requestId);
+    }
+  }
+
   private toPublicTab(tab: ManagedTab): TerminalTabState {
     return {
       id: tab.id,
@@ -657,6 +925,11 @@ export class TerminalTabsManager {
       return;
     }
 
+    if (message.type === 'files_list' || message.type === 'file_content' || message.type === 'file_saved') {
+      this.resolveFileRequest(tab, message.requestId, message);
+      return;
+    }
+
     if (message.type === 'terminal_output') {
       tab.outputBuffer = trimOutput(tab.outputBuffer + message.data);
       tab.outputPreview = getPreview(tab.outputBuffer);
@@ -696,6 +969,27 @@ export class TerminalTabsManager {
     }
 
     if (message.type === 'error') {
+      if (message.requestId) {
+        const matched = this.rejectFileRequest(tab, message.requestId, new Error(`${message.code}: ${message.message}`));
+        if (matched) {
+          return;
+        }
+      }
+
+      if (tab.pendingFileRequests.size > 0) {
+        this.rejectAllPendingFileRequests(tab, `${message.code}: ${message.message}`);
+        // File-protocol failures should not poison the terminal session state.
+        if (message.code === 'INVALID_MESSAGE' || message.code === 'SESSION_NOT_FOUND') {
+          return;
+        }
+      }
+
+      if (message.code === 'INVALID_MESSAGE') {
+        tab.lastError = `${message.code}: ${message.message}`;
+        this.emitTabsChanged();
+        return;
+      }
+
       tab.status = 'error';
       tab.lastError = `${message.code}: ${message.message}`;
       tab.outputBuffer = trimOutput(
@@ -731,6 +1025,7 @@ export class TerminalTabsManager {
   private shutdownSocket(tab: ManagedTab, intent: ManagedTab['disconnectIntent']): void {
     tab.disconnectIntent = intent;
     this.stopPing(tab);
+    this.rejectAllPendingFileRequests(tab, 'Socket closed before file request completed.');
     if (tab.socket) {
       tab.socket.close();
       tab.socket = null;

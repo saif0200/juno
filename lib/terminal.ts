@@ -30,6 +30,33 @@ export type CreateSessionRequest = {
   persistence?: TerminalPersistenceMode;
 };
 
+export type WorkspaceFileEntry = {
+  name: string;
+  path: string;
+  kind: 'file' | 'directory';
+  size?: number;
+  updatedAt?: string;
+};
+
+export type ListFilesRequest = {
+  type: 'list_files';
+  requestId: string;
+  path?: string;
+};
+
+export type ReadFileRequest = {
+  type: 'read_file';
+  requestId: string;
+  path: string;
+};
+
+export type WriteFileRequest = {
+  type: 'write_file';
+  requestId: string;
+  path: string;
+  content: string;
+};
+
 export type ServerMessage =
   | {
       type: 'projects_list';
@@ -60,6 +87,26 @@ export type ServerMessage =
       clientTabId?: string;
     }
   | {
+      type: 'files_list';
+      requestId: string;
+      path: string;
+      entries: WorkspaceFileEntry[];
+    }
+  | {
+      type: 'file_content';
+      requestId: string;
+      path: string;
+      content: string;
+      updatedAt: string;
+    }
+  | {
+      type: 'file_saved';
+      requestId: string;
+      path: string;
+      updatedAt: string;
+      bytes: number;
+    }
+  | {
       type: 'terminal_output' | 'terminal_snapshot';
       sessionId: string;
       data: string;
@@ -79,6 +126,7 @@ export type ServerMessage =
       type: 'error';
       code: string;
       message: string;
+      requestId?: string;
     };
 
 export type TerminalBridgeMessage =

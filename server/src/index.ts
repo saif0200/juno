@@ -16,13 +16,18 @@ import type {
     ClientMessage,
     CreateSessionMessage,
     ErrorMessage,
+    FileContentMessage,
+    FileSavedMessage,
+    FilesListMessage,
     KillSessionMessage,
+    ListFilesMessage,
     PairingConnectionCandidate,
     PairingPayload,
     PingMessage,
     ProjectDefinition,
     ProjectSource,
     PromoteSessionMessage,
+    ReadFileMessage,
     ResumeSessionMessage,
     ServerMessage,
     SessionCreatedMessage,
@@ -33,6 +38,8 @@ import type {
     TerminalPersistenceMode,
     TerminalInputMessage,
     TerminalResizeMessage,
+    WorkspaceFileEntry,
+    WriteFileMessage,
 } from './types';
 
 const PORT = Number.parseInt(process.env.PORT ?? '3000', 10);
@@ -44,6 +51,8 @@ const CLEANUP_INTERVAL_MS = Number.parseInt(
 const DEFAULT_COLS = Number.parseInt(process.env.DEFAULT_TERMINAL_COLS ?? '120', 10);
 const DEFAULT_ROWS = Number.parseInt(process.env.DEFAULT_TERMINAL_ROWS ?? '40', 10);
 const OUTPUT_BUFFER_LIMIT = Number.parseInt(process.env.OUTPUT_BUFFER_LIMIT ?? '200000', 10);
+const MAX_FILE_READ_BYTES = Number.parseInt(process.env.MAX_FILE_READ_BYTES ?? '262144', 10);
+const MAX_FILE_WRITE_BYTES = Number.parseInt(process.env.MAX_FILE_WRITE_BYTES ?? '262144', 10);
 const CLAUDE_COMMAND = resolveClaudeCommand(process.env.CLAUDE_COMMAND ?? 'claude');
 const CLAUDE_ARGS = parseCommandArgs(process.env.CLAUDE_ARGS_JSON);
 const SHELL = process.env.SHELL ?? '/bin/zsh';
@@ -940,6 +949,99 @@ function shellEscape(value: string): string {
   return `'${value.replace(/'/g, `'\\''`)}'`;
 }
 
+function toPortablePath(value: string): string {
+  return value.replace(/\\/g, '/');
+}
+
+function normalizeRelativePath(value: string | undefined): string {
+  if (!value) {
+    return '';
+  }
+
+  const trimmed = value.trim();
+  if (!trimmed || trimmed === '.') {
+    return '';
+  }
+
+  return toPortablePath(path.posix.normalize(trimmed));
+}
+
+function isInsideRoot(root: string, candidate: string): boolean {
+  const relative = path.relative(root, candidate);
+  return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
+}
+
+function resolveExistingPathInProject(session: SessionRecord, relativePath: string): string | null {
+  const projectRoot = fs.realpathSync.native(session.projectPath);
+  const normalized = normalizeRelativePath(relativePath);
+
+  if (path.posix.isAbsolute(normalized) || normalized.startsWith('../') || normalized === '..') {
+    return null;
+  }
+
+  const joined = path.resolve(projectRoot, normalized);
+  if (!isInsideRoot(projectRoot, joined) || !fs.existsSync(joined)) {
+    return null;
+  }
+
+  const realTarget = fs.realpathSync.native(joined);
+  return isInsideRoot(projectRoot, realTarget) ? realTarget : null;
+}
+
+function resolveWriteTargetInProject(session: SessionRecord, relativePath: string): string | null {
+  const projectRoot = fs.realpathSync.native(session.projectPath);
+  const normalized = normalizeRelativePath(relativePath);
+  if (!normalized || path.posix.isAbsolute(normalized) || normalized.startsWith('../') || normalized === '..') {
+    return null;
+  }
+
+  const target = path.resolve(projectRoot, normalized);
+  if (!isInsideRoot(projectRoot, target)) {
+    return null;
+  }
+
+  const parentDir = path.dirname(target);
+  if (!fs.existsSync(parentDir)) {
+    return null;
+  }
+
+  const realParent = fs.realpathSync.native(parentDir);
+  if (!isInsideRoot(projectRoot, realParent)) {
+    return null;
+  }
+
+  if (fs.existsSync(target)) {
+    const realTarget = fs.realpathSync.native(target);
+    if (!isInsideRoot(projectRoot, realTarget)) {
+      return null;
+    }
+  }
+
+  return target;
+}
+
+function relativizeProjectPath(session: SessionRecord, absolutePath: string): string {
+  const projectRoot = fs.realpathSync.native(session.projectPath);
+  const relative = toPortablePath(path.relative(projectRoot, absolutePath));
+  return relative === '' ? '' : relative;
+}
+
+function fileStatToEntry(session: SessionRecord, absolutePath: string, name: string): WorkspaceFileEntry {
+  const stat = fs.statSync(absolutePath);
+  const relativePath = relativizeProjectPath(session, absolutePath);
+  return {
+    name,
+    path: relativePath,
+    kind: stat.isDirectory() ? 'directory' : 'file',
+    ...(stat.isFile() ? { size: stat.size } : {}),
+    updatedAt: stat.mtime.toISOString(),
+  };
+}
+
+function containsNullByte(buffer: Buffer): boolean {
+  return buffer.includes(0);
+}
+
 function sendMessage(socket: WebSocket, message: ServerMessage): void {
   if (socket.readyState !== WebSocket.OPEN) {
     return;
@@ -1194,6 +1296,47 @@ function parseMessage(raw: WebSocket.RawData): ClientMessage | null {
     };
   }
 
+  if (
+    candidate.type === 'list_files' &&
+    typeof candidate.requestId === 'string' &&
+    candidate.requestId.trim().length > 0
+  ) {
+    const requestPath = typeof candidate.path === 'string' ? candidate.path : undefined;
+    return {
+      type: 'list_files',
+      requestId: candidate.requestId,
+      ...(requestPath !== undefined ? { path: requestPath } : {}),
+    };
+  }
+
+  if (
+    candidate.type === 'read_file' &&
+    typeof candidate.requestId === 'string' &&
+    candidate.requestId.trim().length > 0 &&
+    typeof candidate.path === 'string'
+  ) {
+    return {
+      type: 'read_file',
+      requestId: candidate.requestId,
+      path: candidate.path,
+    };
+  }
+
+  if (
+    candidate.type === 'write_file' &&
+    typeof candidate.requestId === 'string' &&
+    candidate.requestId.trim().length > 0 &&
+    typeof candidate.path === 'string' &&
+    typeof candidate.content === 'string'
+  ) {
+    return {
+      type: 'write_file',
+      requestId: candidate.requestId,
+      path: candidate.path,
+      content: candidate.content,
+    };
+  }
+
   if (candidate.type === 'ping') {
     return { type: 'ping' };
   }
@@ -1207,6 +1350,14 @@ function parseMessage(raw: WebSocket.RawData): ClientMessage | null {
   }
 
   return null;
+}
+
+function getRequestIdFromMessage(message: ClientMessage): string | undefined {
+  if (message.type === 'list_files' || message.type === 'read_file' || message.type === 'write_file') {
+    return message.requestId;
+  }
+
+  return undefined;
 }
 
 function sendSnapshot(socket: WebSocket, session: SessionRecord): void {
@@ -1334,6 +1485,176 @@ function handleResumeSession(socket: WebSocket, message: ResumeSessionMessage): 
   sendMessage(socket, payload);
   sendSnapshot(socket, existingSession);
   return existingSession;
+}
+
+function sendRequestError(
+  socket: WebSocket,
+  requestId: string,
+  code: ErrorMessage['code'],
+  message: string,
+): void {
+  sendError(socket, {
+    type: 'error',
+    requestId,
+    code,
+    message,
+  });
+}
+
+function handleListFiles(socket: WebSocket, session: SessionRecord, message: ListFilesMessage): void {
+  const relativePath = normalizeRelativePath(message.path);
+  const directoryPath = resolveExistingPathInProject(session, relativePath);
+  if (!directoryPath) {
+    sendRequestError(
+      socket,
+      message.requestId,
+      'FILE_ACCESS_DENIED',
+      `Path is outside project root or missing: ${relativePath || '.'}`,
+    );
+    return;
+  }
+
+  let stat: fs.Stats;
+  try {
+    stat = fs.statSync(directoryPath);
+  } catch (error: unknown) {
+    sendRequestError(
+      socket,
+      message.requestId,
+      'FILE_NOT_FOUND',
+      error instanceof Error ? error.message : 'Directory not found.',
+    );
+    return;
+  }
+
+  if (!stat.isDirectory()) {
+    sendRequestError(
+      socket,
+      message.requestId,
+      'FILE_NOT_DIRECTORY',
+      `Expected a directory: ${relativePath || '.'}`,
+    );
+    return;
+  }
+
+  const dirEntries = fs.readdirSync(directoryPath, { withFileTypes: true });
+  const entries = dirEntries
+    .filter((entry) => !entry.name.startsWith('.'))
+    .map((entry) => {
+      const absolute = path.resolve(directoryPath, entry.name);
+      return fileStatToEntry(session, absolute, entry.name);
+    })
+    .sort((left, right) => {
+      if (left.kind !== right.kind) {
+        return left.kind === 'directory' ? -1 : 1;
+      }
+      return left.name.localeCompare(right.name);
+    });
+
+  const payload: FilesListMessage = {
+    type: 'files_list',
+    requestId: message.requestId,
+    path: relativePath,
+    entries,
+  };
+  sendMessage(socket, payload);
+}
+
+function handleReadFile(socket: WebSocket, session: SessionRecord, message: ReadFileMessage): void {
+  const relativePath = normalizeRelativePath(message.path);
+  const filePath = resolveExistingPathInProject(session, relativePath);
+  if (!filePath) {
+    sendRequestError(socket, message.requestId, 'FILE_ACCESS_DENIED', `Invalid file path: ${relativePath}`);
+    return;
+  }
+
+  let stat: fs.Stats;
+  try {
+    stat = fs.statSync(filePath);
+  } catch (error: unknown) {
+    sendRequestError(
+      socket,
+      message.requestId,
+      'FILE_NOT_FOUND',
+      error instanceof Error ? error.message : 'File not found.',
+    );
+    return;
+  }
+
+  if (!stat.isFile()) {
+    sendRequestError(socket, message.requestId, 'FILE_NOT_FOUND', `Expected a file: ${relativePath}`);
+    return;
+  }
+
+  if (stat.size > MAX_FILE_READ_BYTES) {
+    sendRequestError(
+      socket,
+      message.requestId,
+      'FILE_TOO_LARGE',
+      `File exceeds read limit (${MAX_FILE_READ_BYTES} bytes): ${relativePath}`,
+    );
+    return;
+  }
+
+  const buffer = fs.readFileSync(filePath);
+  if (containsNullByte(buffer)) {
+    sendRequestError(
+      socket,
+      message.requestId,
+      'FILE_BINARY_UNSUPPORTED',
+      `Binary files are not supported in editor view: ${relativePath}`,
+    );
+    return;
+  }
+
+  const payload: FileContentMessage = {
+    type: 'file_content',
+    requestId: message.requestId,
+    path: relativePath,
+    content: buffer.toString('utf8'),
+    updatedAt: stat.mtime.toISOString(),
+  };
+  sendMessage(socket, payload);
+}
+
+function handleWriteFile(socket: WebSocket, session: SessionRecord, message: WriteFileMessage): void {
+  const relativePath = normalizeRelativePath(message.path);
+  const targetPath = resolveWriteTargetInProject(session, relativePath);
+  if (!targetPath) {
+    sendRequestError(socket, message.requestId, 'FILE_ACCESS_DENIED', `Invalid write path: ${relativePath}`);
+    return;
+  }
+
+  const byteLength = Buffer.byteLength(message.content, 'utf8');
+  if (byteLength > MAX_FILE_WRITE_BYTES) {
+    sendRequestError(
+      socket,
+      message.requestId,
+      'FILE_TOO_LARGE',
+      `File exceeds write limit (${MAX_FILE_WRITE_BYTES} bytes): ${relativePath}`,
+    );
+    return;
+  }
+
+  try {
+    fs.writeFileSync(targetPath, message.content, 'utf8');
+    const stat = fs.statSync(targetPath);
+    const payload: FileSavedMessage = {
+      type: 'file_saved',
+      requestId: message.requestId,
+      path: relativePath,
+      updatedAt: stat.mtime.toISOString(),
+      bytes: byteLength,
+    };
+    sendMessage(socket, payload);
+  } catch (error: unknown) {
+    sendRequestError(
+      socket,
+      message.requestId,
+      'SERVER_ERROR',
+      error instanceof Error ? error.message : 'Unable to write file.',
+    );
+  }
 }
 
 function handlePing(socket: WebSocket, session: SessionRecord, _message: PingMessage): void {
@@ -1465,6 +1786,7 @@ wss.on('connection', (socket: WebSocket, request: Request) => {
         return;
       }
 
+      const requestId = getRequestIdFromMessage(message);
       const activeSessionId =
         requestedSessionId ??
         Array.from(sessions.values()).find((session) => session.socket === socket)?.id ??
@@ -1472,6 +1794,7 @@ wss.on('connection', (socket: WebSocket, request: Request) => {
       if (!activeSessionId) {
         sendError(socket, {
           type: 'error',
+          ...(requestId ? { requestId } : {}),
           code: 'SESSION_NOT_FOUND',
           message: 'No active session is attached to this socket.',
         });
@@ -1482,6 +1805,7 @@ wss.on('connection', (socket: WebSocket, request: Request) => {
       if (!activeSession) {
         sendError(socket, {
           type: 'error',
+          ...(requestId ? { requestId } : {}),
           code: 'SESSION_NOT_FOUND',
           message: `Session not found: ${activeSessionId}`,
         });
@@ -1490,6 +1814,21 @@ wss.on('connection', (socket: WebSocket, request: Request) => {
 
       if (message.type === 'ping') {
         handlePing(socket, activeSession, message);
+        return;
+      }
+
+      if (message.type === 'list_files') {
+        handleListFiles(socket, activeSession, message);
+        return;
+      }
+
+      if (message.type === 'read_file') {
+        handleReadFile(socket, activeSession, message);
+        return;
+      }
+
+      if (message.type === 'write_file') {
+        handleWriteFile(socket, activeSession, message);
         return;
       }
 

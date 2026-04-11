@@ -64,6 +64,9 @@ export type ClientMessageType =
   | 'terminal_input'
   | 'terminal_resize'
   | 'resume_session'
+  | 'list_files'
+  | 'read_file'
+  | 'write_file'
   | 'ping'
   | 'kill_session'
   | 'promote_session';
@@ -73,6 +76,9 @@ export type ServerMessageType =
   | 'sessions_list'
   | 'session_created'
   | 'session_resumed'
+  | 'files_list'
+  | 'file_content'
+  | 'file_saved'
   | 'terminal_output'
   | 'terminal_snapshot'
   | 'terminal_exit'
@@ -111,6 +117,25 @@ export interface ResumeSessionMessage {
   sessionId: string;
 }
 
+export interface ListFilesMessage {
+  type: 'list_files';
+  requestId: string;
+  path?: string;
+}
+
+export interface ReadFileMessage {
+  type: 'read_file';
+  requestId: string;
+  path: string;
+}
+
+export interface WriteFileMessage {
+  type: 'write_file';
+  requestId: string;
+  path: string;
+  content: string;
+}
+
 export interface PingMessage {
   type: 'ping';
 }
@@ -130,9 +155,20 @@ export type ClientMessage =
   | TerminalInputMessage
   | TerminalResizeMessage
   | ResumeSessionMessage
+  | ListFilesMessage
+  | ReadFileMessage
+  | WriteFileMessage
   | PingMessage
   | KillSessionMessage
   | PromoteSessionMessage;
+
+export interface WorkspaceFileEntry {
+  name: string;
+  path: string;
+  kind: 'file' | 'directory';
+  size?: number;
+  updatedAt?: string;
+}
 
 export interface SessionSummary {
   sessionId: string;
@@ -195,6 +231,29 @@ export interface SessionPromotedMessage {
   clientTabId?: string;
 }
 
+export interface FilesListMessage {
+  type: 'files_list';
+  requestId: string;
+  path: string;
+  entries: WorkspaceFileEntry[];
+}
+
+export interface FileContentMessage {
+  type: 'file_content';
+  requestId: string;
+  path: string;
+  content: string;
+  updatedAt: string;
+}
+
+export interface FileSavedMessage {
+  type: 'file_saved';
+  requestId: string;
+  path: string;
+  updatedAt: string;
+  bytes: number;
+}
+
 export interface TerminalOutputMessage {
   type: 'terminal_output';
   sessionId: string;
@@ -222,6 +281,7 @@ export interface PongMessage {
 
 export interface ErrorMessage {
   type: 'error';
+  requestId?: string;
   message: string;
   code:
     | 'INVALID_JSON'
@@ -229,6 +289,11 @@ export interface ErrorMessage {
     | 'SESSION_NOT_FOUND'
     | 'PROJECT_NOT_FOUND'
     | 'PTY_ERROR'
+    | 'FILE_NOT_FOUND'
+    | 'FILE_NOT_DIRECTORY'
+    | 'FILE_ACCESS_DENIED'
+    | 'FILE_TOO_LARGE'
+    | 'FILE_BINARY_UNSUPPORTED'
     | 'SERVER_ERROR';
 }
 
@@ -237,6 +302,9 @@ export type ServerMessage =
   | SessionsListMessage
   | SessionCreatedMessage
   | SessionResumedMessage
+  | FilesListMessage
+  | FileContentMessage
+  | FileSavedMessage
   | TerminalOutputMessage
   | TerminalSnapshotMessage
   | TerminalExitMessage

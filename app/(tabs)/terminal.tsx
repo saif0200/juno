@@ -1,9 +1,9 @@
-import { useLocalSearchParams, useRouter } from 'expo-router';
-import * as Haptics from 'expo-haptics';
+import { useLocalSearchParams } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
+  type GestureResponderEvent,
   Keyboard,
   KeyboardAvoidingView,
   Modal,
@@ -12,30 +12,20 @@ import {
   ScrollView,
   StyleSheet,
   View,
-  useWindowDimensions,
 } from 'react-native';
-import { Gesture, GestureDetector } from 'react-native-gesture-handler';
-import Animated, {
-  runOnJS,
-  useAnimatedStyle,
-  useSharedValue,
-  withSpring,
-} from 'react-native-reanimated';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { WebView, type WebViewMessageEvent } from 'react-native-webview';
 
 import { ThemedText } from '@/components/themed-text';
 import { Fonts } from '@/constants/theme';
 import {
-  terminalTabsManager,
-  type TabsSnapshot,
-} from '@/lib/terminal-tabs';
-import {
   type ProjectDefinition,
   type TerminalBridgeMessage,
-  loadTerminalHtml,
   type TerminalPersistenceMode,
+  loadTerminalHtml,
 } from '@/lib/terminal';
+import { terminalTabsManager, type TabsSnapshot } from '@/lib/terminal-tabs';
+import MaterialIcons from '@expo/vector-icons/MaterialIcons';
 
 type RouteParams = {
   action?: string | string[];
@@ -47,14 +37,13 @@ type RouteParams = {
   persistence?: string | string[];
 };
 
-export default function FullscreenTerminalScreen() {
-  const router = useRouter();
+export default function TerminalTabScreen() {
   const params = useLocalSearchParams<RouteParams>();
-  const webViewRef = useRef<WebView>(null);
+  const terminalWebViewRef = useRef<WebView>(null);
   const outputFlushTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const blockTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pendingOutputRef = useRef('');
   const consumedRequestIdRef = useRef<string | null>(null);
-  const { width } = useWindowDimensions();
 
   const [terminalHtml, setTerminalHtml] = useState<string | null>(null);
   const [isTerminalReady, setIsTerminalReady] = useState(false);
@@ -63,11 +52,9 @@ export default function FullscreenTerminalScreen() {
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
   const [showTabSheet, setShowTabSheet] = useState(false);
   const [showProjectSheet, setShowProjectSheet] = useState(false);
-  const [showControls, setShowControls] = useState(false);
   const [projectsLoading, setProjectsLoading] = useState(false);
   const [availableProjects, setAvailableProjects] = useState<ProjectDefinition[]>([]);
-
-  const swipeX = useSharedValue(0);
+  const [isWebViewBlocked, setIsWebViewBlocked] = useState(false);
 
   const activeTab = useMemo(
     () => snapshot.tabs.find((tab) => tab.id === snapshot.activeTabId) ?? null,
@@ -80,9 +67,11 @@ export default function FullscreenTerminalScreen() {
     async function loadAssets(): Promise<void> {
       try {
         const html = await loadTerminalHtml();
-        if (isMounted) {
-          setTerminalHtml(html);
+        if (!isMounted) {
+          return;
         }
+
+        setTerminalHtml(html);
       } catch (error) {
         if (!isMounted) {
           return;
@@ -100,6 +89,12 @@ export default function FullscreenTerminalScreen() {
     };
   }, []);
 
+  useEffect(() => {
+    return () => {
+      if (blockTimeoutRef.current) clearTimeout(blockTimeoutRef.current);
+    };
+  }, []);
+
   const escapeForBridge = useCallback(
     (value: string): string =>
       JSON.stringify(value).replace(/\u2028/g, '\\u2028').replace(/\u2029/g, '\\u2029'),
@@ -107,7 +102,19 @@ export default function FullscreenTerminalScreen() {
   );
 
   const runInTerminal = useCallback((script: string): void => {
-    webViewRef.current?.injectJavaScript(`${script}\ntrue;`);
+    terminalWebViewRef.current?.injectJavaScript(`${script}\ntrue;`);
+  }, []);
+
+  const dismissSoftKeyboard = useCallback((): void => {
+    Keyboard.dismiss();
+    runInTerminal('window.__blurTerminal && window.__blurTerminal();');
+    setIsWebViewBlocked(true);
+    if (blockTimeoutRef.current) clearTimeout(blockTimeoutRef.current);
+    blockTimeoutRef.current = setTimeout(() => setIsWebViewBlocked(false), 250);
+  }, [runInTerminal]);
+
+  const preventKeyboardDismiss = useCallback((event: GestureResponderEvent): void => {
+    event.stopPropagation();
   }, []);
 
   const flushTerminalOutput = useCallback((): void => {
@@ -121,36 +128,42 @@ export default function FullscreenTerminalScreen() {
     runInTerminal(`window.__writeTerminal(${escapeForBridge(nextChunk)});`);
   }, [escapeForBridge, runInTerminal]);
 
-  const pushTerminalData = useCallback((data: string): void => {
-    pendingOutputRef.current += data;
-    if (outputFlushTimeoutRef.current) {
-      return;
-    }
+  const pushTerminalData = useCallback(
+    (data: string): void => {
+      pendingOutputRef.current += data;
+      if (outputFlushTimeoutRef.current) {
+        return;
+      }
 
-    outputFlushTimeoutRef.current = setTimeout(flushTerminalOutput, 16);
-  }, [flushTerminalOutput]);
+      outputFlushTimeoutRef.current = setTimeout(flushTerminalOutput, 16);
+    },
+    [flushTerminalOutput],
+  );
 
   const clearTerminal = useCallback((): void => {
     flushTerminalOutput();
     runInTerminal('window.__clearTerminal();');
   }, [flushTerminalOutput, runInTerminal]);
 
-  const renderFullBuffer = useCallback((tabId: string | null): void => {
-    if (!tabId) {
+  const renderFullBuffer = useCallback(
+    (tabId: string | null): void => {
+      if (!tabId) {
+        clearTerminal();
+        runInTerminal("window.__setTerminalBanner('No active tab', 'Tap + to create your first terminal.');");
+        return;
+      }
+
+      const buffer = terminalTabsManager.getTabBuffer(tabId);
       clearTerminal();
-      runInTerminal("window.__setTerminalBanner('No active tab', 'Tap + to create your first terminal.');");
-      return;
-    }
+      if (!buffer) {
+        runInTerminal("window.__setTerminalBanner('Terminal ready', 'Waiting for process output...');");
+        return;
+      }
 
-    const buffer = terminalTabsManager.getTabBuffer(tabId);
-    clearTerminal();
-    if (!buffer) {
-      runInTerminal("window.__setTerminalBanner('Terminal ready', 'Waiting for process output...');");
-      return;
-    }
-
-    runInTerminal(`window.__writeTerminal(${escapeForBridge(buffer)});`);
-  }, [clearTerminal, escapeForBridge, runInTerminal]);
+      runInTerminal(`window.__writeTerminal(${escapeForBridge(buffer)});`);
+    },
+    [clearTerminal, escapeForBridge, runInTerminal],
+  );
 
   useEffect(() => {
     const unsubscribe = terminalTabsManager.subscribe((event) => {
@@ -178,7 +191,9 @@ export default function FullscreenTerminalScreen() {
 
     return () => {
       unsubscribe();
-      outputFlushTimeoutRef.current && clearTimeout(outputFlushTimeoutRef.current);
+      if (outputFlushTimeoutRef.current) {
+        clearTimeout(outputFlushTimeoutRef.current);
+      }
     };
   }, [clearTerminal, escapeForBridge, flushTerminalOutput, isTerminalReady, pushTerminalData, runInTerminal]);
 
@@ -234,7 +249,7 @@ export default function FullscreenTerminalScreen() {
     if (message.type === 'terminal_ready') {
       setIsTerminalReady(true);
       if (!snapshot.activeTabId) {
-        runInTerminal("window.__setTerminalBanner('Claude Terminal', 'Swipe to switch tabs once you have more than one.');");
+        runInTerminal("window.__setTerminalBanner('Claude Terminal', 'Open a tab to start.');");
       }
       return;
     }
@@ -255,75 +270,6 @@ export default function FullscreenTerminalScreen() {
 
     terminalTabsManager.resizeActive(message.cols, message.rows);
   }
-
-  async function maybeHapticSwitch(): Promise<void> {
-    if (Platform.OS === 'ios') {
-      await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-    }
-  }
-
-  const switchWithGesture = useCallback((direction: 'next' | 'prev'): void => {
-    const switched = terminalTabsManager.switchRelative(direction === 'next' ? 1 : -1);
-    if (switched) {
-      void maybeHapticSwitch();
-    }
-  }, []);
-
-  const swipeGesture = useMemo(
-    () =>
-      Gesture.Pan()
-        .activeOffsetX([-16, 16])
-        .failOffsetY([-10, 10])
-        .onUpdate((event) => {
-          const maxDrift = Math.min(56, width * 0.16);
-          const next = Math.max(-maxDrift, Math.min(maxDrift, event.translationX * 0.22));
-          swipeX.value = next;
-        })
-        .onEnd((event) => {
-          const velocity = event.velocityX;
-          const travel = event.translationX;
-          const passed = Math.abs(travel) > width * 0.14 || Math.abs(velocity) > 720;
-
-          if (passed) {
-            if (travel < 0 || velocity < -720) {
-              runOnJS(switchWithGesture)('next');
-            } else {
-              runOnJS(switchWithGesture)('prev');
-            }
-          }
-
-          swipeX.value = withSpring(0, { damping: 18, stiffness: 220 });
-        }),
-    [swipeX, switchWithGesture, width],
-  );
-
-  const terminalAnimatedStyle = useAnimatedStyle(() => ({
-    transform: [{ translateX: swipeX.value }],
-  }));
-
-  const activeStatusColor = useMemo(() => {
-    if (!activeTab) {
-      return '#71717a';
-    }
-
-    if (activeTab.status === 'live') {
-      return '#34d399';
-    }
-
-    if (activeTab.status === 'connecting') {
-      return '#60a5fa';
-    }
-
-    if (activeTab.status === 'exited') {
-      return '#fbbf24';
-    }
-
-    if (activeTab.status === 'error') {
-      return '#f87171';
-    }
-
-    return '#a1a1aa';
-  }, [activeTab]);
 
   async function openProjectChooser(): Promise<void> {
     const connectionUrl = activeTab?.connectionUrl;
@@ -412,121 +358,54 @@ export default function FullscreenTerminalScreen() {
     return `${activeTab.status} · ${activeTab.projectName}`;
   }, [activeTab, lastError, statusMessage]);
 
-  const controlKeys = [
-    { label: 'ESC', sequence: '\x1b' },
-    { label: 'TAB', sequence: '\x09' },
-    { label: '↑', sequence: '\x1b[A' },
-    { label: '↓', sequence: '\x1b[B' },
-    { label: '←', sequence: '\x1b[D' },
-    { label: '→', sequence: '\x1b[C' },
-    { label: '^C', sequence: '\x03' },
-    { label: '^D', sequence: '\x04' },
-  ];
-
   return (
-    <View style={styles.screen}>
+    <View onTouchStart={dismissSoftKeyboard} style={styles.screen}>
       <StatusBar style="light" />
+      <View pointerEvents="none" style={styles.brandGlowTop} />
 
       <SafeAreaView edges={['top', 'left', 'right']} style={styles.topSafeArea}>
-        <View style={styles.topBar}>
-          <Pressable onPress={() => router.back()} style={styles.iconButton}>
-            <ThemedText style={styles.topBarButtonText}>←</ThemedText>
-          </Pressable>
-
-          <Pressable onPress={() => setShowTabSheet(true)} style={styles.activeCenter}>
-            <View style={[styles.statusDot, { backgroundColor: activeStatusColor }]} />
-            <View style={styles.activeCenterTextWrap}>
-              <ThemedText numberOfLines={1} style={styles.activeProjectText}>
-                {activeTab?.projectName ?? 'No terminal'}
-              </ThemedText>
-              <ThemedText style={styles.activeMetaText}>
-                {snapshot.tabs.length > 0 && snapshot.activeTabIndex >= 0
-                  ? `${snapshot.activeTabIndex + 1}/${snapshot.tabs.length} · ${activeTab?.status}`
-                  : '0/0'}
-              </ThemedText>
-            </View>
-          </Pressable>
-
+        <View style={styles.topCard}>
+          <View style={styles.topMeta} />
           <View style={styles.topBarActions}>
-            <Pressable
-              onLongPress={() => {
-                void openProjectChooser();
-              }}
-              onPress={createQuickTab}
-              style={styles.iconButton}>
-              <ThemedText style={styles.topBarButtonText}>+</ThemedText>
+            <Pressable onPress={() => setShowTabSheet(true)} style={styles.iconButton}>
+              <MaterialIcons color="#e5eeff" name="layers" size={18} />
             </Pressable>
-            <Pressable
-              onPress={() => {
-                setShowControls((prev) => {
-                  const next = !prev;
-                  if (!next) {
-                    Keyboard.dismiss();
-                    runInTerminal('window.__blurTerminal?.();');
-                  }
-                  return next;
-                });
-              }}
-              style={styles.iconButton}>
-              <ThemedText style={styles.topBarButtonText}>{showControls ? '⌄' : '⌃'}</ThemedText>
+            <Pressable onLongPress={() => void openProjectChooser()} onPress={createQuickTab} style={styles.iconButton}>
+              <MaterialIcons color="#e5eeff" name="add" size={18} />
             </Pressable>
           </View>
         </View>
       </SafeAreaView>
 
-      <KeyboardAvoidingView
-        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-        style={styles.flex1}>
-        <GestureDetector gesture={swipeGesture}>
-          <Animated.View style={[styles.webviewShell, terminalAnimatedStyle]}>
-            {terminalHtml ? (
-              <WebView
-                automaticallyAdjustContentInsets={false}
-                ref={webViewRef}
-                allowFileAccess
-                allowsInlineMediaPlayback
-                bounces={false}
-                contentInsetAdjustmentBehavior="never"
-                hideKeyboardAccessoryView
-                javaScriptEnabled
-                keyboardDisplayRequiresUserAction={true}
-                onError={(event) => {
-                  const message = event.nativeEvent.description || 'Unknown WebView error';
-                  setLastError(`WebView failed to load: ${message}`);
-                }}
-                onMessage={handleTerminalBridgeMessage}
-                originWhitelist={['*']}
-                scrollEnabled={false}
-                source={{ html: terminalHtml, baseUrl: 'file:///' }}
-                style={styles.webview}
-              />
-            ) : (
-              <View style={styles.loadingState}>
-                <ThemedText style={styles.loadingText}>Loading terminal runtime…</ThemedText>
-              </View>
-            )}
-          </Animated.View>
-        </GestureDetector>
-
-        {showControls ? (
-          <View style={styles.toolbarContainer}>
-            <ScrollView
-              horizontal
-              keyboardShouldPersistTaps="always"
-              scrollEnabled
-              showsHorizontalScrollIndicator={false}
-              contentContainerStyle={styles.toolbarContent}>
-              {controlKeys.map((key) => (
-                <Pressable
-                  key={key.label}
-                  onPress={() => terminalTabsManager.sendInputToActive(key.sequence)}
-                  style={styles.controlKeyButton}>
-                  <ThemedText style={styles.controlKeyText}>{key.label}</ThemedText>
-                </Pressable>
-              ))}
-            </ScrollView>
-          </View>
-        ) : null}
+      <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.flex1}>
+        <View onTouchStart={preventKeyboardDismiss} pointerEvents={isWebViewBlocked ? 'none' : 'auto'} style={styles.webviewShell}>
+          {terminalHtml ? (
+            <WebView
+              automaticallyAdjustContentInsets={false}
+              ref={terminalWebViewRef}
+              allowFileAccess
+              allowsInlineMediaPlayback
+              bounces={false}
+              contentInsetAdjustmentBehavior="never"
+              hideKeyboardAccessoryView
+              javaScriptEnabled
+              keyboardDisplayRequiresUserAction
+              onError={(event) => {
+                const message = event.nativeEvent.description || 'Unknown WebView error';
+                setLastError(`WebView failed to load: ${message}`);
+              }}
+              onMessage={handleTerminalBridgeMessage}
+              originWhitelist={['*']}
+              scrollEnabled={false}
+              source={{ html: terminalHtml, baseUrl: 'file:///' }}
+              style={styles.webview}
+            />
+          ) : (
+            <View style={styles.loadingState}>
+              <ThemedText style={styles.loadingText}>Loading terminal runtime…</ThemedText>
+            </View>
+          )}
+        </View>
       </KeyboardAvoidingView>
 
       {compactStatus ? (
@@ -537,11 +416,7 @@ export default function FullscreenTerminalScreen() {
         </SafeAreaView>
       ) : null}
 
-      <Modal
-        animationType="slide"
-        transparent
-        visible={showTabSheet}
-        onRequestClose={() => setShowTabSheet(false)}>
+      <Modal animationType="slide" transparent visible={showTabSheet} onRequestClose={() => setShowTabSheet(false)}>
         <Pressable style={styles.sheetBackdrop} onPress={() => setShowTabSheet(false)}>
           <View style={styles.sheetCard}>
             <ThemedText style={styles.sheetTitle}>Terminals</ThemedText>
@@ -567,11 +442,7 @@ export default function FullscreenTerminalScreen() {
         </Pressable>
       </Modal>
 
-      <Modal
-        animationType="slide"
-        transparent
-        visible={showProjectSheet}
-        onRequestClose={() => setShowProjectSheet(false)}>
+      <Modal animationType="slide" transparent visible={showProjectSheet} onRequestClose={() => setShowProjectSheet(false)}>
         <Pressable style={styles.sheetBackdrop} onPress={() => setShowProjectSheet(false)}>
           <View style={styles.sheetCard}>
             <ThemedText style={styles.sheetTitle}>Open Project In New Tab</ThemedText>
@@ -582,10 +453,7 @@ export default function FullscreenTerminalScreen() {
             ) : null}
             <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.sheetList}>
               {availableProjects.map((project) => (
-                <Pressable
-                  key={project.id}
-                  onPress={() => createTabFromProject(project)}
-                  style={styles.projectRow}>
+                <Pressable key={project.id} onPress={() => createTabFromProject(project)} style={styles.projectRow}>
                   <ThemedText style={styles.projectRowTitle}>{project.name}</ThemedText>
                   <ThemedText style={styles.projectRowMeta}>{project.path}</ThemedText>
                 </Pressable>
@@ -616,8 +484,17 @@ function normalizePersistence(value?: string): TerminalPersistenceMode | undefin
 
 const styles = StyleSheet.create({
   screen: {
-    backgroundColor: '#020617',
+    backgroundColor: '#0b0d10',
     flex: 1,
+  },
+  brandGlowTop: {
+    backgroundColor: 'rgba(45, 212, 191, 0.08)',
+    borderRadius: 220,
+    height: 220,
+    position: 'absolute',
+    right: -90,
+    top: -110,
+    width: 220,
   },
   flex1: {
     flex: 1,
@@ -629,222 +506,170 @@ const styles = StyleSheet.create({
     overflow: 'hidden',
   },
   webview: {
-    backgroundColor: '#020617',
+    backgroundColor: '#0f1115',
     flex: 1,
   },
   loadingState: {
     alignItems: 'center',
-    backgroundColor: '#020617',
+    backgroundColor: '#0f1115',
     flex: 1,
     justifyContent: 'center',
     paddingHorizontal: 24,
   },
   loadingText: {
-    color: '#cbd5e1',
+    color: '#aab2bf',
     fontFamily: Fonts.mono,
-    fontSize: 14,
+    fontSize: 13,
   },
   topSafeArea: {
-    backgroundColor: '#09090b',
-    borderBottomColor: 'rgba(255, 255, 255, 0.08)',
-    borderBottomWidth: StyleSheet.hairlineWidth,
+    backgroundColor: 'transparent',
   },
-  topBar: {
-    alignItems: 'center',
+  topCard: {
+    alignItems: 'flex-start',
+    backgroundColor: '#10141d',
+    borderBottomColor: '#1f2634',
+    borderBottomWidth: 1,
     flexDirection: 'row',
     gap: 8,
     justifyContent: 'space-between',
-    paddingHorizontal: 10,
-    paddingTop: 6,
-    paddingBottom: 6,
+    paddingBottom: 11,
+    paddingHorizontal: 12,
+    paddingTop: 8,
+  },
+  topMeta: {
+    flex: 1,
+    minWidth: 0,
   },
   topBarActions: {
     alignItems: 'center',
     flexDirection: 'row',
     gap: 6,
   },
-  activeCenter: {
-    alignItems: 'center',
-    backgroundColor: '#12121a',
-    borderColor: 'rgba(255, 255, 255, 0.08)',
-    borderRadius: 12,
-    borderWidth: 1,
-    flex: 1,
-    flexDirection: 'row',
-    gap: 8,
-    minWidth: 0,
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-  },
-  activeCenterTextWrap: {
-    flex: 1,
-    minWidth: 0,
-  },
-  activeProjectText: {
-    color: '#f4f4f5',
-    fontFamily: Fonts.mono,
-    fontSize: 11,
-    fontWeight: '700',
-  },
-  activeMetaText: {
-    color: '#9ca3af',
-    fontFamily: Fonts.mono,
-    fontSize: 10,
-    textTransform: 'uppercase',
-  },
-  statusDot: {
-    borderRadius: 999,
-    height: 8,
-    width: 8,
-  },
   iconButton: {
     alignItems: 'center',
-    backgroundColor: '#141418',
-    borderColor: 'rgba(255, 255, 255, 0.08)',
-    borderRadius: 999,
+    backgroundColor: '#1a2230',
+    borderColor: '#31405a',
+    borderRadius: 10,
     borderWidth: 1,
-    height: 30,
+    height: 32,
     justifyContent: 'center',
-    width: 30,
-  },
-  topBarButtonText: {
-    color: '#f4f4f5',
-    fontFamily: Fonts.mono,
-    fontSize: 11,
-    fontWeight: '700',
-  },
-  toolbarContainer: {
-    backgroundColor: '#09090b',
-    borderTopColor: 'rgba(255, 255, 255, 0.07)',
-    borderTopWidth: StyleSheet.hairlineWidth,
-  },
-  toolbarContent: {
-    gap: 8,
+    minWidth: 58,
     paddingHorizontal: 12,
-    paddingVertical: 10,
   },
-  controlKeyButton: {
-    backgroundColor: '#18181b',
-    borderColor: 'rgba(255, 255, 255, 0.08)',
-    borderRadius: 11,
+  statusSafeArea: {
+    bottom: 10,
+    left: 12,
+    position: 'absolute',
+    right: 12,
+  },
+  statusCard: {
+    backgroundColor: 'rgba(17, 21, 28, 0.96)',
+    borderColor: '#29303c',
+    borderRadius: 10,
     borderWidth: 1,
     paddingHorizontal: 12,
     paddingVertical: 9,
   },
-  controlKeyText: {
-    color: '#f4f4f5',
-    fontFamily: Fonts.mono,
-    fontSize: 12,
-    fontWeight: '700',
-  },
-  statusSafeArea: {
-    bottom: 80,
-    left: 0,
-    position: 'absolute',
-    right: 0,
-  },
-  statusCard: {
-    alignSelf: 'center',
-    backgroundColor: 'rgba(15, 23, 42, 0.92)',
-    borderColor: 'rgba(148, 163, 184, 0.22)',
-    borderRadius: 12,
-    borderWidth: 1,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-  },
   statusText: {
-    color: '#e2e8f0',
-    fontFamily: Fonts.mono,
-    fontSize: 11,
+    color: '#c2c9d4',
+    fontFamily: Fonts.sans,
+    fontSize: 12,
   },
   sheetBackdrop: {
-    backgroundColor: 'rgba(2, 6, 23, 0.64)',
+    backgroundColor: 'rgba(6, 8, 10, 0.65)',
     flex: 1,
     justifyContent: 'flex-end',
+    padding: 10,
   },
   sheetCard: {
-    backgroundColor: '#09090b',
-    borderTopLeftRadius: 18,
-    borderTopRightRadius: 18,
-    maxHeight: '62%',
+    backgroundColor: '#0f141d',
+    borderColor: '#273145',
+    borderRadius: 14,
+    borderWidth: 1,
+    maxHeight: '78%',
     paddingHorizontal: 14,
-    paddingTop: 12,
-    paddingBottom: 18,
+    paddingTop: 14,
   },
   sheetTitle: {
-    color: '#f8fafc',
-    fontFamily: Fonts.rounded,
-    fontSize: 18,
+    color: '#eef2f7',
+    fontFamily: Fonts.sans,
+    fontSize: 14,
+    fontWeight: '600',
     marginBottom: 10,
   },
   sheetList: {
-    gap: 8,
-    paddingBottom: 10,
+    paddingBottom: 20,
   },
   sheetRow: {
     alignItems: 'center',
-    backgroundColor: '#111827',
-    borderColor: 'rgba(255, 255, 255, 0.08)',
-    borderRadius: 12,
+    backgroundColor: '#141c2a',
+    borderColor: '#2d3a50',
+    borderRadius: 10,
     borderWidth: 1,
     flexDirection: 'row',
+    marginBottom: 8,
     paddingHorizontal: 10,
-    paddingVertical: 9,
+    paddingVertical: 10,
   },
   sheetRowActive: {
-    borderColor: 'rgba(96, 165, 250, 0.66)',
+    borderColor: '#38bdf8',
+    backgroundColor: '#182436',
   },
   sheetRowMain: {
     flex: 1,
     minWidth: 0,
   },
   sheetRowTitle: {
-    color: '#f8fafc',
-    fontFamily: Fonts.mono,
-    fontSize: 12,
-    fontWeight: '700',
+    color: '#eef2f7',
+    fontFamily: Fonts.sans,
+    fontSize: 13,
+    fontWeight: '600',
   },
   sheetRowMeta: {
-    color: '#9ca3af',
-    fontFamily: Fonts.mono,
-    fontSize: 10,
-    textTransform: 'uppercase',
+    color: '#98a2b3',
+    fontFamily: Fonts.sans,
+    fontSize: 11,
+    marginTop: 2,
+    textTransform: 'capitalize',
   },
   sheetCloseButton: {
-    borderColor: 'rgba(255, 255, 255, 0.14)',
-    borderRadius: 999,
+    backgroundColor: '#1c2533',
+    borderColor: '#32435e',
+    borderRadius: 8,
     borderWidth: 1,
     paddingHorizontal: 10,
-    paddingVertical: 6,
+    paddingVertical: 7,
   },
   sheetCloseText: {
-    color: '#d1d5db',
-    fontFamily: Fonts.mono,
-    fontSize: 10,
-    textTransform: 'uppercase',
+    color: '#e2e8f0',
+    fontFamily: Fonts.sans,
+    fontSize: 11,
+    fontWeight: '600',
   },
   loadingProjects: {
     alignItems: 'center',
+    justifyContent: 'center',
     paddingVertical: 10,
   },
   projectRow: {
-    backgroundColor: '#111827',
-    borderColor: 'rgba(255, 255, 255, 0.08)',
-    borderRadius: 12,
+    backgroundColor: '#141c2a',
+    borderColor: '#2d3a50',
+    borderRadius: 10,
     borderWidth: 1,
+    marginBottom: 8,
     paddingHorizontal: 10,
     paddingVertical: 10,
   },
   projectRowTitle: {
-    color: '#f8fafc',
-    fontFamily: Fonts.mono,
-    fontSize: 12,
-    fontWeight: '700',
+    color: '#eef2f7',
+    fontFamily: Fonts.sans,
+    fontSize: 13,
+    fontWeight: '600',
   },
   projectRowMeta: {
-    color: '#9ca3af',
+    color: '#97a1b1',
     fontFamily: Fonts.mono,
-    fontSize: 10,
+    fontSize: 11,
     marginTop: 3,
   },
 });

@@ -4,8 +4,7 @@ import { Pressable, ScrollView, StyleSheet, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { ThemedText } from '@/components/themed-text';
-import { Colors, Fonts } from '@/constants/theme';
-import { useColorScheme } from '@/hooks/use-color-scheme';
+import { Fonts } from '@/constants/theme';
 import {
   consumePendingDeviceId,
   deleteSavedDevice,
@@ -25,8 +24,6 @@ function formatTimestamp(value: string): string {
 
 export default function WorkspaceScreen() {
   const router = useRouter();
-  const colorScheme = useColorScheme() ?? 'dark';
-  const palette = Colors[colorScheme];
   const socketRef = useRef<WebSocket | null>(null);
   const selectedDeviceIdRef = useRef<string | null>(null);
   const refreshSavedDevicesRef = useRef<() => Promise<void>>(async () => {});
@@ -71,6 +68,7 @@ export default function WorkspaceScreen() {
     [sessions],
   );
   const isConnected = connectionStatus === 'Connected';
+  const statusTone = isConnected ? '#38bdf8' : '#94a3b8';
 
   function requestBootstrapData(): void {
     if (!socketRef.current || socketRef.current.readyState !== WebSocket.OPEN) {
@@ -236,53 +234,57 @@ export default function WorkspaceScreen() {
   }
 
   return (
-    <SafeAreaView style={[styles.safeArea, { backgroundColor: palette.background }]}>
+    <SafeAreaView style={[styles.safeArea, { backgroundColor: '#090b10' }]}>
+      <View pointerEvents="none" style={styles.backgroundGlowTop} />
+      <View pointerEvents="none" style={styles.backgroundGlowBottom} />
       <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
-        <View style={styles.header}>
-          <View style={styles.headerCopy}>
-            <ThemedText style={[styles.eyebrow, { color: palette.muted }]}>Workspace</ThemedText>
-            <ThemedText type="title" style={styles.title}>
-              Multi-terminal workspace.
-            </ThemedText>
-            <ThemedText style={[styles.description, { color: palette.muted }]}>
-              Pair by QR, pick a relay, and open fast local-first tabs for parallel workflows.
+        <View style={styles.heroCard}>
+          <View style={styles.heroTopRow}>
+            <View style={styles.brandPill}>
+              <View style={styles.brandDot} />
+              <ThemedText style={styles.brandPillText}>JUNO</ThemedText>
+            </View>
+            <Pressable
+              onPress={() => router.push('/pair-device')}
+              style={styles.scanButton}>
+              <ThemedText style={styles.scanButtonText}>Pair Device</ThemedText>
+            </Pressable>
+          </View>
+
+          <View style={styles.heroCopy}>
+            <ThemedText style={styles.title}>Juno Workspace</ThemedText>
+            <ThemedText style={styles.description}>
+              Local-first coding cockpit with persistent terminals, instant code access, and relay sessions that resume fast.
             </ThemedText>
           </View>
-          <Pressable
-            onPress={() => router.push('/pair-device')}
-            style={[styles.scanButton, { backgroundColor: palette.text }]}>
-            <ThemedText style={[styles.scanButtonText, { color: palette.background }]}>
-              Scan QR
-            </ThemedText>
-          </Pressable>
+
+          <View style={styles.metrics}>
+            <View style={styles.metric}>
+              <ThemedText style={styles.metricLabel}>Relay</ThemedText>
+              <ThemedText style={[styles.metricValue, { color: statusTone }]}>{connectionStatus}</ThemedText>
+            </View>
+            <View style={styles.metric}>
+              <ThemedText style={styles.metricLabel}>Devices</ThemedText>
+              <ThemedText style={styles.metricValue}>{savedDevices.length}</ThemedText>
+            </View>
+          </View>
         </View>
 
-        <View style={styles.metrics}>
-          <View style={[styles.metric, { backgroundColor: palette.surface, borderColor: palette.border }]}>
-            <ThemedText style={[styles.metricLabel, { color: palette.muted }]}>Status</ThemedText>
-            <ThemedText style={styles.metricValue}>{connectionStatus}</ThemedText>
-          </View>
-          <View style={[styles.metric, { backgroundColor: palette.surface, borderColor: palette.border }]}>
-            <ThemedText style={[styles.metricLabel, { color: palette.muted }]}>Devices</ThemedText>
-            <ThemedText style={styles.metricValue}>{savedDevices.length}</ThemedText>
-          </View>
-        </View>
-
-        <View style={styles.section}>
+        <View style={styles.sectionPanel}>
           <View style={styles.sectionHeader}>
-            <ThemedText style={styles.sectionTitle}>Saved devices</ThemedText>
+            <ThemedText style={styles.sectionTitle}>Devices</ThemedText>
             {isConnected ? (
               <Pressable
                 onPress={disconnect}
-                style={[styles.inlineAction, { backgroundColor: palette.surface, borderColor: palette.border }]}>
-                <ThemedText style={[styles.inlineActionText, { color: palette.text }]}>Disconnect</ThemedText>
+                style={styles.inlineAction}>
+                <ThemedText style={styles.inlineActionText}>Disconnect</ThemedText>
               </Pressable>
             ) : null}
           </View>
 
           {savedDevices.length === 0 ? (
-            <View style={[styles.emptyState, { backgroundColor: palette.surface, borderColor: palette.border }]}>
-              <ThemedText style={[styles.emptyText, { color: palette.muted }]}>
+            <View style={styles.emptyState}>
+              <ThemedText style={styles.emptyText}>
                 No devices yet. Scan a QR code to add your relay.
               </ThemedText>
             </View>
@@ -296,10 +298,7 @@ export default function WorkspaceScreen() {
                   key={device.id}
                   style={[
                     styles.deviceRow,
-                    {
-                      backgroundColor: palette.surface,
-                      borderColor: isSelected ? palette.text : palette.border,
-                    },
+                    isSelected ? styles.deviceRowSelected : null,
                   ]}>
                   <Pressable onPress={() => applySelection(device)} style={styles.deviceMain}>
                     <View style={styles.deviceTop}>
@@ -307,15 +306,15 @@ export default function WorkspaceScreen() {
                       <ThemedText
                         style={[
                           styles.deviceStatus,
-                          { color: isActive ? palette.success : palette.muted },
+                          { color: isActive ? '#22c55e' : isSelected ? '#38bdf8' : '#94a3b8' },
                         ]}>
                         {isActive ? 'Connected' : isSelected ? 'Selected' : 'Saved'}
                       </ThemedText>
                     </View>
-                    <ThemedText style={[styles.deviceUrl, { color: palette.muted }]}>
+                    <ThemedText style={styles.deviceUrl}>
                       {device.wsUrl}
                     </ThemedText>
-                    <ThemedText style={[styles.deviceMeta, { color: palette.muted }]}>
+                    <ThemedText style={styles.deviceMeta}>
                       {device.lastUsedAt
                         ? `Last used ${formatTimestamp(device.lastUsedAt)}`
                         : `Saved ${formatTimestamp(device.createdAt)}`}
@@ -325,16 +324,13 @@ export default function WorkspaceScreen() {
                   <View style={styles.deviceActions}>
                     <Pressable
                       onPress={() => connect(device)}
-                      style={[
-                        styles.deviceActionButton,
-                        { backgroundColor: palette.surfaceMuted, borderColor: palette.border },
-                      ]}>
-                      <ThemedText style={[styles.deviceActionText, { color: palette.text }]}>
+                      style={styles.deviceActionButton}>
+                      <ThemedText style={styles.deviceActionText}>
                         {isActive ? 'Refresh' : 'Connect'}
                       </ThemedText>
                     </Pressable>
                     <Pressable onPress={() => void forgetDevice(device.id)} style={styles.deviceForget}>
-                      <ThemedText style={[styles.deviceForgetText, { color: palette.danger }]}>
+                      <ThemedText style={styles.deviceForgetText}>
                         Forget
                       </ThemedText>
                     </Pressable>
@@ -345,11 +341,11 @@ export default function WorkspaceScreen() {
           )}
         </View>
 
-        <View style={styles.section}>
+        <View style={styles.sectionPanel}>
           <ThemedText style={styles.sectionTitle}>Projects</ThemedText>
           {projects.length === 0 ? (
-            <View style={[styles.emptyState, { backgroundColor: palette.surface, borderColor: palette.border }]}>
-              <ThemedText style={[styles.emptyText, { color: palette.muted }]}>
+            <View style={styles.emptyState}>
+              <ThemedText style={styles.emptyText}>
                 {isConnected
                   ? 'No projects available from this relay.'
                   : 'Connect a saved device to load projects.'}
@@ -363,24 +359,20 @@ export default function WorkspaceScreen() {
                 onPress={() => openNewSession(project)}
                 style={[
                   styles.listRow,
-                  {
-                    backgroundColor: palette.surface,
-                    borderColor: palette.border,
-                    opacity: isConnected ? 1 : 0.5,
-                  },
+                  !isConnected ? styles.listRowDisabled : null,
                 ]}>
                 <ThemedText style={styles.listTitle}>{project.name}</ThemedText>
-                <ThemedText style={[styles.listMeta, { color: palette.muted }]}>{project.path}</ThemedText>
+                <ThemedText style={styles.listMeta}>{project.path}</ThemedText>
               </Pressable>
             ))
           )}
         </View>
 
-        <View style={styles.section}>
+        <View style={styles.sectionPanel}>
           <ThemedText style={styles.sectionTitle}>Recent sessions</ThemedText>
           {sessionCards.length === 0 ? (
-            <View style={[styles.emptyState, { backgroundColor: palette.surface, borderColor: palette.border }]}>
-              <ThemedText style={[styles.emptyText, { color: palette.muted }]}>
+            <View style={styles.emptyState}>
+              <ThemedText style={styles.emptyText}>
                 Previous sessions appear here after the relay reports them.
               </ThemedText>
             </View>
@@ -392,17 +384,13 @@ export default function WorkspaceScreen() {
                 onPress={() => openExistingSession(session)}
                 style={[
                   styles.listRow,
-                  {
-                    backgroundColor: palette.surface,
-                    borderColor: palette.border,
-                    opacity: isConnected ? 1 : 0.5,
-                  },
+                  !isConnected ? styles.listRowDisabled : null,
                 ]}>
                 <ThemedText style={styles.listTitle}>{session.projectName}</ThemedText>
-                <ThemedText style={[styles.listMeta, { color: palette.muted }]}>
+                <ThemedText style={styles.listMeta}>
                   {session.projectPath}
                 </ThemedText>
-                <ThemedText style={[styles.listMeta, { color: palette.muted }]}>
+                <ThemedText style={styles.listMeta}>
                   {session.hasActiveProcess ? 'Running' : 'Exited'} · {formatTimestamp(session.updatedAt)}
                 </ThemedText>
               </Pressable>
@@ -410,12 +398,8 @@ export default function WorkspaceScreen() {
           )}
         </View>
 
-        {statusMessage ? (
-          <ThemedText style={[styles.messageText, { color: palette.success }]}>{statusMessage}</ThemedText>
-        ) : null}
-        {lastError ? (
-          <ThemedText style={[styles.messageText, { color: palette.danger }]}>{lastError}</ThemedText>
-        ) : null}
+        {statusMessage ? <ThemedText style={[styles.messageText, { color: '#22c55e' }]}>{statusMessage}</ThemedText> : null}
+        {lastError ? <ThemedText style={[styles.messageText, { color: '#f87171' }]}>{lastError}</ThemedText> : null}
       </ScrollView>
     </SafeAreaView>
   );
@@ -425,69 +409,134 @@ const styles = StyleSheet.create({
   safeArea: {
     flex: 1,
   },
+  backgroundGlowTop: {
+    backgroundColor: 'rgba(56, 189, 248, 0.12)',
+    borderRadius: 220,
+    height: 220,
+    position: 'absolute',
+    right: -60,
+    top: -70,
+    width: 220,
+  },
+  backgroundGlowBottom: {
+    backgroundColor: 'rgba(45, 212, 191, 0.08)',
+    borderRadius: 260,
+    bottom: -130,
+    height: 260,
+    left: -90,
+    position: 'absolute',
+    width: 260,
+  },
   content: {
-    gap: 18,
-    paddingHorizontal: 18,
-    paddingTop: 14,
-    paddingBottom: 34,
+    gap: 14,
+    paddingBottom: 30,
+    paddingHorizontal: 14,
+    paddingTop: 10,
   },
-  header: {
-    gap: 12,
+  heroCard: {
+    backgroundColor: '#10141d',
+    borderColor: '#222938',
+    borderRadius: 16,
+    borderWidth: 1,
+    padding: 14,
   },
-  headerCopy: {
+  heroTopRow: {
+    alignItems: 'center',
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+  },
+  brandPill: {
+    alignItems: 'center',
+    backgroundColor: '#141b27',
+    borderColor: '#2a3345',
+    borderRadius: 999,
+    borderWidth: 1,
+    flexDirection: 'row',
     gap: 6,
+    paddingHorizontal: 10,
+    paddingVertical: 4,
   },
-  eyebrow: {
+  brandDot: {
+    backgroundColor: '#22d3ee',
+    borderRadius: 99,
+    height: 7,
+    width: 7,
+  },
+  brandPillText: {
+    color: '#ccf7ff',
     fontFamily: Fonts.mono,
-    fontSize: 11,
-    letterSpacing: 1,
-    textTransform: 'uppercase',
+    fontSize: 10,
+    fontWeight: '700',
+    letterSpacing: 0.8,
+  },
+  heroCopy: {
+    marginTop: 12,
   },
   title: {
-    fontFamily: Fonts.rounded,
-    fontSize: 32,
-    lineHeight: 36,
-    maxWidth: 280,
+    color: '#ecf2ff',
+    fontFamily: Fonts.sans,
+    fontSize: 28,
+    fontWeight: '700',
+    lineHeight: 31,
   },
   description: {
-    fontSize: 14,
-    lineHeight: 22,
-    maxWidth: 320,
+    color: '#97a1b1',
+    fontFamily: Fonts.sans,
+    fontSize: 13,
+    lineHeight: 19,
+    marginTop: 8,
   },
   scanButton: {
     alignItems: 'center',
-    borderRadius: 16,
-    paddingHorizontal: 16,
-    paddingVertical: 14,
+    backgroundColor: '#1b2433',
+    borderColor: '#31405a',
+    borderRadius: 8,
+    borderWidth: 1,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
   },
   scanButtonText: {
-    fontFamily: Fonts.rounded,
-    fontSize: 16,
-    fontWeight: '700',
+    color: '#ebf1ff',
+    fontFamily: Fonts.sans,
+    fontSize: 12,
+    fontWeight: '600',
   },
   metrics: {
+    borderTopColor: '#252e3f',
+    borderTopWidth: 1,
     flexDirection: 'row',
-    gap: 10,
+    gap: 8,
+    marginTop: 12,
+    paddingTop: 12,
   },
   metric: {
-    borderRadius: 16,
+    backgroundColor: '#131927',
+    borderColor: '#273247',
+    borderRadius: 10,
     borderWidth: 1,
     flex: 1,
-    gap: 6,
+    gap: 4,
     paddingHorizontal: 12,
-    paddingVertical: 12,
+    paddingVertical: 10,
   },
   metricLabel: {
-    fontFamily: Fonts.mono,
+    color: '#9aa4b5',
+    fontFamily: Fonts.sans,
     fontSize: 11,
-    textTransform: 'uppercase',
   },
   metricValue: {
-    fontFamily: Fonts.rounded,
-    fontSize: 18,
+    color: '#edf2ff',
+    fontFamily: Fonts.sans,
+    fontSize: 17,
+    fontWeight: '700',
   },
-  section: {
+  sectionPanel: {
+    backgroundColor: '#10141d',
+    borderColor: '#222938',
+    borderRadius: 14,
+    borderWidth: 1,
     gap: 10,
+    padding: 12,
   },
   sectionHeader: {
     alignItems: 'center',
@@ -495,36 +544,51 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
   },
   sectionTitle: {
-    fontFamily: Fonts.rounded,
-    fontSize: 22,
+    color: '#ecf2ff',
+    fontFamily: Fonts.sans,
+    fontSize: 19,
+    fontWeight: '600',
   },
   inlineAction: {
-    borderRadius: 12,
+    backgroundColor: '#1a2230',
+    borderColor: '#313d54',
+    borderRadius: 8,
     borderWidth: 1,
     paddingHorizontal: 10,
-    paddingVertical: 8,
+    paddingVertical: 7,
   },
   inlineActionText: {
-    fontFamily: Fonts.mono,
-    fontSize: 11,
-    fontWeight: '700',
+    color: '#e4ebf8',
+    fontFamily: Fonts.sans,
+    fontSize: 12,
+    fontWeight: '600',
   },
   emptyState: {
-    borderRadius: 16,
+    backgroundColor: '#121824',
+    borderColor: '#263044',
+    borderRadius: 10,
     borderWidth: 1,
-    paddingHorizontal: 14,
-    paddingVertical: 14,
-  },
-  emptyText: {
-    fontSize: 14,
-    lineHeight: 20,
-  },
-  deviceRow: {
-    borderRadius: 18,
-    borderWidth: 1,
-    gap: 10,
     paddingHorizontal: 14,
     paddingVertical: 12,
+  },
+  emptyText: {
+    color: '#9ba4b5',
+    fontFamily: Fonts.sans,
+    fontSize: 13,
+    lineHeight: 19,
+  },
+  deviceRow: {
+    backgroundColor: '#121824',
+    borderColor: '#263044',
+    borderRadius: 11,
+    borderWidth: 1,
+    gap: 9,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+  },
+  deviceRowSelected: {
+    borderColor: '#3b82f6',
+    backgroundColor: '#121c2f',
   },
   deviceMain: {
     gap: 5,
@@ -535,22 +599,27 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
   },
   deviceName: {
+    color: '#edf2ff',
     flex: 1,
-    fontFamily: Fonts.rounded,
-    fontSize: 19,
+    fontFamily: Fonts.sans,
+    fontSize: 17,
+    fontWeight: '600',
     marginRight: 10,
   },
   deviceStatus: {
     fontFamily: Fonts.mono,
     fontSize: 11,
-    textTransform: 'uppercase',
+    textTransform: 'capitalize',
   },
   deviceUrl: {
+    color: '#9ba5b6',
     fontFamily: Fonts.mono,
     fontSize: 12,
     lineHeight: 17,
   },
   deviceMeta: {
+    color: '#7f8ba0',
+    fontFamily: Fonts.sans,
     fontSize: 12,
     lineHeight: 18,
   },
@@ -560,45 +629,61 @@ const styles = StyleSheet.create({
     gap: 12,
   },
   deviceActionButton: {
-    borderRadius: 12,
+    backgroundColor: '#1a2230',
+    borderColor: '#313d54',
+    borderRadius: 8,
     borderWidth: 1,
     paddingHorizontal: 12,
-    paddingVertical: 10,
+    paddingVertical: 8,
   },
   deviceActionText: {
-    fontFamily: Fonts.mono,
-    fontSize: 11,
-    fontWeight: '700',
-    textTransform: 'uppercase',
+    color: '#e4ebf8',
+    fontFamily: Fonts.sans,
+    fontSize: 12,
+    fontWeight: '600',
   },
   deviceForget: {
     paddingVertical: 6,
   },
   deviceForgetText: {
+    color: '#f87171',
     fontFamily: Fonts.mono,
-    fontSize: 11,
+    fontSize: 12,
     fontWeight: '700',
-    textTransform: 'uppercase',
   },
   listRow: {
-    borderRadius: 16,
+    backgroundColor: '#121824',
+    borderColor: '#263044',
+    borderRadius: 10,
     borderWidth: 1,
     gap: 5,
     paddingHorizontal: 14,
-    paddingVertical: 14,
+    paddingVertical: 12,
+  },
+  listRowDisabled: {
+    opacity: 0.45,
   },
   listTitle: {
-    fontFamily: Fonts.rounded,
-    fontSize: 18,
+    color: '#edf2ff',
+    fontFamily: Fonts.sans,
+    fontSize: 16,
+    fontWeight: '600',
   },
   listMeta: {
+    color: '#9ba5b6',
     fontFamily: Fonts.mono,
     fontSize: 12,
     lineHeight: 18,
   },
   messageText: {
+    backgroundColor: '#10141d',
+    borderColor: '#222938',
+    borderRadius: 10,
+    borderWidth: 1,
     fontFamily: Fonts.mono,
     fontSize: 12,
     lineHeight: 18,
+    paddingHorizontal: 10,
+    paddingVertical: 9,
   },
 });
