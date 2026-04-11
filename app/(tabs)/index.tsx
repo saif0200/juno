@@ -205,10 +205,12 @@ export default function WorkspaceScreen() {
     router.push({
       pathname: '/terminal',
       params: {
-        mode: 'create',
+        action: 'open_project',
+        requestId: `${Date.now()}-${project.id}`,
         url: buildWebSocketConnectionUrl(selectedDevice.wsUrl, selectedDevice.token),
         projectId: project.id,
         projectName: project.name,
+        persistence: 'ephemeral',
       },
     });
   }
@@ -222,11 +224,13 @@ export default function WorkspaceScreen() {
     router.push({
       pathname: '/terminal',
       params: {
-        mode: 'resume',
+        action: 'open_existing',
+        requestId: `${Date.now()}-${session.sessionId}`,
         url: buildWebSocketConnectionUrl(selectedDevice.wsUrl, selectedDevice.token),
         sessionId: session.sessionId,
+        projectId: session.projectId,
         projectName: session.projectName,
-        projectPath: session.projectPath,
+        persistence: session.persistence ?? 'persisted',
       },
     });
   }
@@ -238,10 +242,10 @@ export default function WorkspaceScreen() {
           <View style={styles.headerCopy}>
             <ThemedText style={[styles.eyebrow, { color: palette.muted }]}>Workspace</ThemedText>
             <ThemedText type="title" style={styles.title}>
-              One relay. One flow.
+              Multi-terminal workspace.
             </ThemedText>
             <ThemedText style={[styles.description, { color: palette.muted }]}>
-              Pair by QR, pick a saved device, and jump straight into Claude sessions.
+              Pair by QR, pick a relay, and open fast local-first tabs for parallel workflows.
             </ThemedText>
           </View>
           <Pressable

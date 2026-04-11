@@ -1,63 +1,78 @@
 import { useLocalSearchParams, useRouter } from 'expo-router';
+import * as Haptics from 'expo-haptics';
 import { StatusBar } from 'expo-status-bar';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
+  ActivityIndicator,
   Keyboard,
   KeyboardAvoidingView,
+  Modal,
   Platform,
   Pressable,
   ScrollView,
   StyleSheet,
   View,
+  useWindowDimensions,
 } from 'react-native';
+import { Gesture, GestureDetector } from 'react-native-gesture-handler';
+import Animated, {
+  runOnJS,
+  useAnimatedStyle,
+  useSharedValue,
+  withSpring,
+} from 'react-native-reanimated';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { WebView, type WebViewMessageEvent } from 'react-native-webview';
 
 import { ThemedText } from '@/components/themed-text';
 import { Fonts } from '@/constants/theme';
 import {
-    type ServerMessage,
-    type TerminalBridgeMessage,
-    getDefaultWebSocketUrl,
-    loadTerminalHtml,
+  terminalTabsManager,
+  type TabsSnapshot,
+} from '@/lib/terminal-tabs';
+import {
+  type ProjectDefinition,
+  type TerminalBridgeMessage,
+  loadTerminalHtml,
+  type TerminalPersistenceMode,
 } from '@/lib/terminal';
 
 type RouteParams = {
-  mode?: string | string[];
+  action?: string | string[];
+  requestId?: string | string[];
+  url?: string | string[];
   projectId?: string | string[];
   projectName?: string | string[];
-  projectPath?: string | string[];
   sessionId?: string | string[];
-  url?: string | string[];
+  persistence?: string | string[];
 };
-
-type OverlayTone = 'neutral' | 'warning' | 'danger';
 
 export default function FullscreenTerminalScreen() {
   const router = useRouter();
   const params = useLocalSearchParams<RouteParams>();
   const webViewRef = useRef<WebView>(null);
-  const socketRef = useRef<WebSocket | null>(null);
-  const pingIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const outputFlushTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pendingOutputRef = useRef('');
-  const activeSessionIdRef = useRef<string | null>(null);
-  const activeProjectNameRef = useRef<string | null>(null);
-  const didExitRef = useRef(false);
+  const consumedRequestIdRef = useRef<string | null>(null);
+  const { width } = useWindowDimensions();
+
   const [terminalHtml, setTerminalHtml] = useState<string | null>(null);
   const [isTerminalReady, setIsTerminalReady] = useState(false);
-  const [connectionStatus, setConnectionStatus] = useState('Preparing terminal...');
-  const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
-  const [activeProjectName, setActiveProjectName] = useState<string | null>(null);
+  const [snapshot, setSnapshot] = useState<TabsSnapshot>(terminalTabsManager.getSnapshot());
   const [lastError, setLastError] = useState<string | null>(null);
-  const [didExit, setDidExit] = useState(false);
-  const [exitMessage, setExitMessage] = useState<string | null>(null);
+  const [statusMessage, setStatusMessage] = useState<string | null>(null);
+  const [showTabSheet, setShowTabSheet] = useState(false);
+  const [showProjectSheet, setShowProjectSheet] = useState(false);
+  const [showControls, setShowControls] = useState(false);
+  const [projectsLoading, setProjectsLoading] = useState(false);
+  const [availableProjects, setAvailableProjects] = useState<ProjectDefinition[]>([]);
 
-  const mode = firstParam(params.mode) === 'resume' ? 'resume' : 'create';
-  const url = firstParam(params.url) ?? getDefaultWebSocketUrl();
-  const routeProjectId = firstParam(params.projectId);
-  const routeProjectName = firstParam(params.projectName);
-  const routeSessionId = firstParam(params.sessionId);
+  const swipeX = useSharedValue(0);
+
+  const activeTab = useMemo(
+    () => snapshot.tabs.find((tab) => tab.id === snapshot.activeTabId) ?? null,
+    [snapshot.activeTabId, snapshot.tabs],
+  );
 
   useEffect(() => {
     let isMounted = true;
@@ -74,7 +89,6 @@ export default function FullscreenTerminalScreen() {
         }
 
         const message = error instanceof Error ? error.message : String(error);
-        setConnectionStatus('Terminal runtime failed');
         setLastError(`Failed to load terminal runtime: ${message}`);
       }
     }
@@ -86,44 +100,14 @@ export default function FullscreenTerminalScreen() {
     };
   }, []);
 
-  useEffect(() => {
-    return () => {
-      pingIntervalRef.current && clearInterval(pingIntervalRef.current);
-      outputFlushTimeoutRef.current && clearTimeout(outputFlushTimeoutRef.current);
-      socketRef.current?.close();
-    };
-  }, []);
-
-  useEffect(() => {
-    activeSessionIdRef.current = activeSessionId;
-  }, [activeSessionId]);
-
-  useEffect(() => {
-    activeProjectNameRef.current = activeProjectName;
-  }, [activeProjectName]);
-
-  useEffect(() => {
-    didExitRef.current = didExit;
-  }, [didExit]);
-
-
-  function escapeForBridge(value: string): string {
-    return JSON.stringify(value).replace(/\u2028/g, '\\u2028').replace(/\u2029/g, '\\u2029');
-  }
+  const escapeForBridge = useCallback(
+    (value: string): string =>
+      JSON.stringify(value).replace(/\u2028/g, '\\u2028').replace(/\u2029/g, '\\u2029'),
+    [],
+  );
 
   const runInTerminal = useCallback((script: string): void => {
     webViewRef.current?.injectJavaScript(`${script}\ntrue;`);
-  }, []);
-
-  const dismissKeyboard = useCallback((): void => {
-    Keyboard.dismiss();
-    runInTerminal('window.__blurTerminal?.();');
-  }, [runInTerminal]);
-
-  const sendKey = useCallback((sequence: string): void => {
-    if (socketRef.current?.readyState === WebSocket.OPEN) {
-      socketRef.current.send(JSON.stringify({ type: 'terminal_input', data: sequence }));
-    }
   }, []);
 
   const flushTerminalOutput = useCallback((): void => {
@@ -135,7 +119,7 @@ export default function FullscreenTerminalScreen() {
     const nextChunk = pendingOutputRef.current;
     pendingOutputRef.current = '';
     runInTerminal(`window.__writeTerminal(${escapeForBridge(nextChunk)});`);
-  }, [runInTerminal]);
+  }, [escapeForBridge, runInTerminal]);
 
   const pushTerminalData = useCallback((data: string): void => {
     pendingOutputRef.current += data;
@@ -146,233 +130,287 @@ export default function FullscreenTerminalScreen() {
     outputFlushTimeoutRef.current = setTimeout(flushTerminalOutput, 16);
   }, [flushTerminalOutput]);
 
-  const showTerminalBanner = useCallback((title: string, subtitle?: string): void => {
-    flushTerminalOutput();
-    runInTerminal(
-      `window.__setTerminalBanner(${escapeForBridge(title)}, ${escapeForBridge(subtitle ?? '')});`,
-    );
-  }, [flushTerminalOutput, runInTerminal]);
-
   const clearTerminal = useCallback((): void => {
     flushTerminalOutput();
     runInTerminal('window.__clearTerminal();');
   }, [flushTerminalOutput, runInTerminal]);
 
-  const startPingLoop = useCallback((): void => {
-    if (pingIntervalRef.current) {
-      clearInterval(pingIntervalRef.current);
+  const renderFullBuffer = useCallback((tabId: string | null): void => {
+    if (!tabId) {
+      clearTerminal();
+      runInTerminal("window.__setTerminalBanner('No active tab', 'Tap + to create your first terminal.');");
+      return;
     }
 
-    pingIntervalRef.current = setInterval(() => {
-      if (
-        !socketRef.current ||
-        socketRef.current.readyState !== WebSocket.OPEN ||
-        !activeSessionIdRef.current
-      ) {
+    const buffer = terminalTabsManager.getTabBuffer(tabId);
+    clearTerminal();
+    if (!buffer) {
+      runInTerminal("window.__setTerminalBanner('Terminal ready', 'Waiting for process output...');");
+      return;
+    }
+
+    runInTerminal(`window.__writeTerminal(${escapeForBridge(buffer)});`);
+  }, [clearTerminal, escapeForBridge, runInTerminal]);
+
+  useEffect(() => {
+    const unsubscribe = terminalTabsManager.subscribe((event) => {
+      if (event.type === 'tabs_changed') {
+        setSnapshot(event.snapshot);
+
+        const currentActive = event.snapshot.tabs.find((tab) => tab.id === event.snapshot.activeTabId) ?? null;
+        setLastError(currentActive?.lastError ?? null);
         return;
       }
 
-      socketRef.current.send(JSON.stringify({ type: 'ping' }));
-    }, 20000);
-  }, []);
+      if (!isTerminalReady) {
+        return;
+      }
 
-  const connect = useCallback(
-    (shouldResumeExisting: boolean): void => {
-      pingIntervalRef.current && clearInterval(pingIntervalRef.current);
-      socketRef.current?.close();
-      setLastError(null);
-      setDidExit(false);
-      setExitMessage(null);
-      setConnectionStatus(shouldResumeExisting ? 'Reconnecting...' : 'Connecting...');
-      showTerminalBanner(
-        shouldResumeExisting ? 'Reconnecting session' : 'Connecting to relay',
-        activeProjectNameRef.current ?? routeProjectName ?? url,
-      );
+      if (event.type === 'active_output') {
+        pushTerminalData(event.data);
+        return;
+      }
 
-      const socket = new WebSocket(url);
-      socketRef.current = socket;
+      flushTerminalOutput();
+      clearTerminal();
+      runInTerminal(`window.__writeTerminal(${escapeForBridge(event.data)});`);
+    });
 
-      socket.onopen = () => {
-        setConnectionStatus(shouldResumeExisting ? 'Resuming session...' : 'Starting Claude...');
-
-        if (shouldResumeExisting && (activeSessionIdRef.current ?? routeSessionId)) {
-          socket.send(
-            JSON.stringify({
-              type: 'resume_session',
-              sessionId: activeSessionIdRef.current ?? routeSessionId,
-            }),
-          );
-          return;
-        }
-
-        if (!routeProjectId) {
-          setConnectionStatus('Missing project');
-          setLastError('No project was selected before entering the terminal.');
-          showTerminalBanner('Missing project', 'Go back and choose a project first.');
-          return;
-        }
-
-        clearTerminal();
-        showTerminalBanner('Launching Claude', routeProjectName ?? routeProjectId);
-        socket.send(
-          JSON.stringify({
-            type: 'create_session',
-            projectId: routeProjectId,
-          }),
-        );
-      };
-
-      socket.onmessage = (event) => {
-        const message = JSON.parse(event.data as string) as ServerMessage;
-
-        if (message.type === 'session_created' || message.type === 'session_resumed') {
-          setActiveSessionId(message.sessionId);
-          setActiveProjectName(message.projectName);
-          setConnectionStatus(
-            message.type === 'session_created' ? 'Live session' : 'Session resumed',
-          );
-          startPingLoop();
-          return;
-        }
-
-        if (message.type === 'terminal_output' || message.type === 'terminal_snapshot') {
-          pushTerminalData(message.data);
-          return;
-        }
-
-        if (message.type === 'terminal_exit') {
-          const statusText = `Process exited with code ${message.exitCode}${
-            message.signal ? `, signal ${message.signal}` : ''
-          }.`;
-          setConnectionStatus(`Exited (${message.exitCode})`);
-          setDidExit(true);
-          setExitMessage(statusText);
-          pushTerminalData(`\r\n\x1b[90m[${statusText}]\x1b[0m\r\n`);
-          return;
-        }
-
-        if (message.type === 'pong') {
-          return;
-        }
-
-        if (message.type === 'error') {
-          setConnectionStatus('Relay error');
-          setLastError(`${message.code}: ${message.message}`);
-          pushTerminalData(`\r\n\x1b[31m[${message.code}] ${message.message}\x1b[0m\r\n`);
-        }
-      };
-
-      socket.onerror = () => {
-        setConnectionStatus('Connection failed');
-        setLastError('WebSocket connection failed.');
-      };
-
-      socket.onclose = () => {
-        socketRef.current = null;
-        pingIntervalRef.current && clearInterval(pingIntervalRef.current);
-        if (didExitRef.current) {
-          setConnectionStatus('Session closed');
-          return;
-        }
-
-        setConnectionStatus(activeSessionIdRef.current ? 'Disconnected' : 'Connection closed');
-      };
-    },
-    [
-      pushTerminalData,
-      routeProjectId,
-      routeProjectName,
-      routeSessionId,
-      clearTerminal,
-      showTerminalBanner,
-      startPingLoop,
-      url,
-    ],
-  );
+    return () => {
+      unsubscribe();
+      outputFlushTimeoutRef.current && clearTimeout(outputFlushTimeoutRef.current);
+    };
+  }, [clearTerminal, escapeForBridge, flushTerminalOutput, isTerminalReady, pushTerminalData, runInTerminal]);
 
   useEffect(() => {
     if (!isTerminalReady || !terminalHtml) {
       return;
     }
 
-    connect(mode === 'resume');
-  }, [connect, isTerminalReady, mode, terminalHtml]);
+    renderFullBuffer(snapshot.activeTabId);
+  }, [isTerminalReady, renderFullBuffer, snapshot.activeTabId, terminalHtml]);
+
+  const action = firstParam(params.action);
+  const requestId = firstParam(params.requestId);
+  const url = firstParam(params.url);
+  const projectId = firstParam(params.projectId);
+  const projectName = firstParam(params.projectName);
+  const sessionId = firstParam(params.sessionId);
+  const persistence = normalizePersistence(firstParam(params.persistence));
+
+  useEffect(() => {
+    if (!requestId || consumedRequestIdRef.current === requestId) {
+      return;
+    }
+
+    consumedRequestIdRef.current = requestId;
+
+    if (action === 'open_project' && url && projectId && projectName) {
+      const result = terminalTabsManager.openProjectTab({
+        projectId,
+        projectName,
+        connectionUrl: url,
+        persistence,
+      });
+      setStatusMessage(result.error);
+      return;
+    }
+
+    if (action === 'open_existing' && url && sessionId && projectId && projectName) {
+      const result = terminalTabsManager.openExistingSession({
+        relaySessionId: sessionId,
+        projectId,
+        projectName,
+        connectionUrl: url,
+        persistence: persistence ?? 'persisted',
+      });
+      setStatusMessage(result.error);
+    }
+  }, [action, persistence, projectId, projectName, requestId, sessionId, url]);
 
   function handleTerminalBridgeMessage(event: WebViewMessageEvent): void {
     const message = JSON.parse(event.nativeEvent.data) as TerminalBridgeMessage;
 
     if (message.type === 'terminal_ready') {
       setIsTerminalReady(true);
-      showTerminalBanner('Claude Terminal', 'Preparing immersive session...');
+      if (!snapshot.activeTabId) {
+        runInTerminal("window.__setTerminalBanner('Claude Terminal', 'Swipe to switch tabs once you have more than one.');");
+      }
       return;
     }
 
     if (message.type === 'terminal_runtime_error') {
-      setConnectionStatus('Terminal runtime failed');
       setLastError(`WebView terminal error: ${message.message}`);
       return;
     }
 
-    if (
-      !socketRef.current ||
-      socketRef.current.readyState !== WebSocket.OPEN ||
-      activeSessionId === null
-    ) {
+    if (!snapshot.activeTabId) {
       return;
     }
 
     if (message.type === 'terminal_input') {
-      socketRef.current.send(
-        JSON.stringify({
-          type: 'terminal_input',
-          data: message.data,
-        }),
-      );
+      terminalTabsManager.sendInputToActive(message.data);
       return;
     }
 
-    socketRef.current.send(
-      JSON.stringify({
-        type: 'terminal_resize',
-        cols: message.cols,
-        rows: message.rows,
-      }),
-    );
+    terminalTabsManager.resizeActive(message.cols, message.rows);
   }
 
-  function reconnect(): void {
-    connect(didExit ? mode === 'resume' : Boolean(activeSessionId ?? routeSessionId));
+  async function maybeHapticSwitch(): Promise<void> {
+    if (Platform.OS === 'ios') {
+      await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    }
   }
 
-  const overlay = useMemo(() => {
+  const switchWithGesture = useCallback((direction: 'next' | 'prev'): void => {
+    const switched = terminalTabsManager.switchRelative(direction === 'next' ? 1 : -1);
+    if (switched) {
+      void maybeHapticSwitch();
+    }
+  }, []);
+
+  const swipeGesture = useMemo(
+    () =>
+      Gesture.Pan()
+        .activeOffsetX([-16, 16])
+        .failOffsetY([-10, 10])
+        .onUpdate((event) => {
+          const maxDrift = Math.min(56, width * 0.16);
+          const next = Math.max(-maxDrift, Math.min(maxDrift, event.translationX * 0.22));
+          swipeX.value = next;
+        })
+        .onEnd((event) => {
+          const velocity = event.velocityX;
+          const travel = event.translationX;
+          const passed = Math.abs(travel) > width * 0.14 || Math.abs(velocity) > 720;
+
+          if (passed) {
+            if (travel < 0 || velocity < -720) {
+              runOnJS(switchWithGesture)('next');
+            } else {
+              runOnJS(switchWithGesture)('prev');
+            }
+          }
+
+          swipeX.value = withSpring(0, { damping: 18, stiffness: 220 });
+        }),
+    [swipeX, switchWithGesture, width],
+  );
+
+  const terminalAnimatedStyle = useAnimatedStyle(() => ({
+    transform: [{ translateX: swipeX.value }],
+  }));
+
+  const activeStatusColor = useMemo(() => {
+    if (!activeTab) {
+      return '#71717a';
+    }
+
+    if (activeTab.status === 'live') {
+      return '#34d399';
+    }
+
+    if (activeTab.status === 'connecting') {
+      return '#60a5fa';
+    }
+
+    if (activeTab.status === 'exited') {
+      return '#fbbf24';
+    }
+
+    if (activeTab.status === 'error') {
+      return '#f87171';
+    }
+
+    return '#a1a1aa';
+  }, [activeTab]);
+
+  async function openProjectChooser(): Promise<void> {
+    const connectionUrl = activeTab?.connectionUrl;
+    if (!connectionUrl) {
+      setStatusMessage('Open a tab first to load projects from a relay.');
+      return;
+    }
+
+    setShowProjectSheet(true);
+
+    const cached = terminalTabsManager.getKnownProjects(connectionUrl);
+    if (cached.length > 0) {
+      setAvailableProjects(cached);
+    }
+
+    setProjectsLoading(true);
+    const result = await terminalTabsManager.fetchProjectsForConnection(connectionUrl);
+    setProjectsLoading(false);
+    setAvailableProjects(result.projects);
+    setStatusMessage(result.error);
+  }
+
+  function createQuickTab(): void {
+    const result = terminalTabsManager.createTabLikeActive();
+    if (result.error) {
+      setStatusMessage(result.error);
+      return;
+    }
+
+    setStatusMessage(null);
+  }
+
+  function createTabFromProject(project: ProjectDefinition): void {
+    const connectionUrl = activeTab?.connectionUrl;
+    if (!connectionUrl) {
+      setStatusMessage('Unable to resolve relay connection for selected project.');
+      return;
+    }
+
+    const result = terminalTabsManager.openProjectTab({
+      projectId: project.id,
+      projectName: project.name,
+      connectionUrl,
+      persistence: 'ephemeral',
+    });
+
+    if (result.error) {
+      setStatusMessage(result.error);
+      return;
+    }
+
+    setShowProjectSheet(false);
+    setStatusMessage(null);
+  }
+
+  function closeTab(tabId: string): void {
+    terminalTabsManager.closeTab(tabId);
+  }
+
+  function activateTab(tabId: string): void {
+    terminalTabsManager.activateTab(tabId);
+    setShowTabSheet(false);
+  }
+
+  const compactStatus = useMemo(() => {
+    if (statusMessage) {
+      return statusMessage;
+    }
+
     if (lastError) {
-      return {
-        tone: 'danger' as const,
-        title: 'Relay error',
-        subtitle: lastError,
-      };
+      return lastError;
     }
 
-    if (didExit) {
-      return {
-        tone: 'warning' as const,
-        title: 'Session exited',
-        subtitle: exitMessage ?? 'The Claude process has ended.',
-      };
+    if (!activeTab) {
+      return 'Tap + to create a terminal';
     }
 
-    if (!socketRef.current || socketRef.current.readyState !== WebSocket.OPEN) {
-      return {
-        tone: 'neutral' as const,
-        title: activeSessionId ? 'Disconnected' : 'Connecting',
-        subtitle: activeSessionId
-          ? 'Reconnect to reattach before the relay session expires.'
-          : connectionStatus,
-      };
+    if (activeTab.status === 'live') {
+      return null;
     }
 
-    return null;
-  }, [activeSessionId, connectionStatus, didExit, exitMessage, lastError]);
+    if (activeTab.status === 'exited') {
+      return activeTab.exitState?.message ?? 'Process exited';
+    }
+
+    return `${activeTab.status} · ${activeTab.projectName}`;
+  }, [activeTab, lastError, statusMessage]);
 
   const controlKeys = [
     { label: 'ESC', sequence: '\x1b' },
@@ -391,24 +429,46 @@ export default function FullscreenTerminalScreen() {
 
       <SafeAreaView edges={['top', 'left', 'right']} style={styles.topSafeArea}>
         <View style={styles.topBar}>
-          <View style={styles.topBarLead}>
-            <Pressable onPress={() => router.back()} style={styles.topBarButton}>
-              <ThemedText style={styles.topBarButtonText}>Workspace</ThemedText>
-            </Pressable>
-            {activeProjectName || routeProjectName ? (
-              <View style={styles.projectBadge}>
-                <ThemedText numberOfLines={1} style={styles.projectBadgeText}>
-                  {activeProjectName ?? routeProjectName}
-                </ThemedText>
-              </View>
-            ) : null}
-          </View>
+          <Pressable onPress={() => router.back()} style={styles.iconButton}>
+            <ThemedText style={styles.topBarButtonText}>←</ThemedText>
+          </Pressable>
+
+          <Pressable onPress={() => setShowTabSheet(true)} style={styles.activeCenter}>
+            <View style={[styles.statusDot, { backgroundColor: activeStatusColor }]} />
+            <View style={styles.activeCenterTextWrap}>
+              <ThemedText numberOfLines={1} style={styles.activeProjectText}>
+                {activeTab?.projectName ?? 'No terminal'}
+              </ThemedText>
+              <ThemedText style={styles.activeMetaText}>
+                {snapshot.tabs.length > 0 && snapshot.activeTabIndex >= 0
+                  ? `${snapshot.activeTabIndex + 1}/${snapshot.tabs.length} · ${activeTab?.status}`
+                  : '0/0'}
+              </ThemedText>
+            </View>
+          </Pressable>
+
           <View style={styles.topBarActions}>
-            <Pressable onPress={dismissKeyboard} style={styles.iconButton}>
-              <ThemedText style={styles.topBarButtonText}>Hide keys</ThemedText>
+            <Pressable
+              onLongPress={() => {
+                void openProjectChooser();
+              }}
+              onPress={createQuickTab}
+              style={styles.iconButton}>
+              <ThemedText style={styles.topBarButtonText}>+</ThemedText>
             </Pressable>
-            <Pressable onPress={() => runInTerminal('window.__focusTerminal?.();')} style={styles.iconButton}>
-              <ThemedText style={styles.topBarButtonText}>Focus</ThemedText>
+            <Pressable
+              onPress={() => {
+                setShowControls((prev) => {
+                  const next = !prev;
+                  if (!next) {
+                    Keyboard.dismiss();
+                    runInTerminal('window.__blurTerminal?.();');
+                  }
+                  return next;
+                });
+              }}
+              style={styles.iconButton}>
+              <ThemedText style={styles.topBarButtonText}>{showControls ? '⌄' : '⌃'}</ThemedText>
             </Pressable>
           </View>
         </View>
@@ -416,79 +476,124 @@ export default function FullscreenTerminalScreen() {
 
       <KeyboardAvoidingView
         behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-        style={styles.flex1}
-      >
-        <View style={styles.webviewShell}>
-          {terminalHtml ? (
-            <WebView
-              automaticallyAdjustContentInsets={false}
-              ref={webViewRef}
-              allowFileAccess
-              allowsInlineMediaPlayback
-              bounces={false}
-              contentInsetAdjustmentBehavior="never"
-              hideKeyboardAccessoryView
-              javaScriptEnabled
-              keyboardDisplayRequiresUserAction={true}
-              onError={(event) => {
-                const message = event.nativeEvent.description || 'Unknown WebView error';
-                setConnectionStatus('Terminal runtime failed');
-                setLastError(`WebView failed to load: ${message}`);
-              }}
-              onMessage={handleTerminalBridgeMessage}
-              originWhitelist={['*']}
-              scrollEnabled={false}
-              source={{ html: terminalHtml, baseUrl: 'file:///' }}
-              style={styles.webview}
-            />
-          ) : (
-            <View style={styles.loadingState}>
-              <ThemedText style={styles.loadingText}>Loading terminal runtime…</ThemedText>
-            </View>
-          )}
-        </View>
+        style={styles.flex1}>
+        <GestureDetector gesture={swipeGesture}>
+          <Animated.View style={[styles.webviewShell, terminalAnimatedStyle]}>
+            {terminalHtml ? (
+              <WebView
+                automaticallyAdjustContentInsets={false}
+                ref={webViewRef}
+                allowFileAccess
+                allowsInlineMediaPlayback
+                bounces={false}
+                contentInsetAdjustmentBehavior="never"
+                hideKeyboardAccessoryView
+                javaScriptEnabled
+                keyboardDisplayRequiresUserAction={true}
+                onError={(event) => {
+                  const message = event.nativeEvent.description || 'Unknown WebView error';
+                  setLastError(`WebView failed to load: ${message}`);
+                }}
+                onMessage={handleTerminalBridgeMessage}
+                originWhitelist={['*']}
+                scrollEnabled={false}
+                source={{ html: terminalHtml, baseUrl: 'file:///' }}
+                style={styles.webview}
+              />
+            ) : (
+              <View style={styles.loadingState}>
+                <ThemedText style={styles.loadingText}>Loading terminal runtime…</ThemedText>
+              </View>
+            )}
+          </Animated.View>
+        </GestureDetector>
 
-        <View style={styles.toolbarContainer}>
-          <ScrollView
-            horizontal
-            keyboardShouldPersistTaps="always"
-            scrollEnabled
-            showsHorizontalScrollIndicator={false}
-            contentContainerStyle={styles.toolbarContent}
-          >
-            {controlKeys.map((key) => (
-              <Pressable
-                key={key.label}
-                onPress={() => sendKey(key.sequence)}
-                style={styles.controlKeyButton}
-              >
-                <ThemedText style={styles.controlKeyText}>{key.label}</ThemedText>
-              </Pressable>
-            ))}
-          </ScrollView>
-        </View>
+        {showControls ? (
+          <View style={styles.toolbarContainer}>
+            <ScrollView
+              horizontal
+              keyboardShouldPersistTaps="always"
+              scrollEnabled
+              showsHorizontalScrollIndicator={false}
+              contentContainerStyle={styles.toolbarContent}>
+              {controlKeys.map((key) => (
+                <Pressable
+                  key={key.label}
+                  onPress={() => terminalTabsManager.sendInputToActive(key.sequence)}
+                  style={styles.controlKeyButton}>
+                  <ThemedText style={styles.controlKeyText}>{key.label}</ThemedText>
+                </Pressable>
+              ))}
+            </ScrollView>
+          </View>
+        ) : null}
       </KeyboardAvoidingView>
 
-      {overlay ? (
-        <SafeAreaView edges={['bottom']} pointerEvents="box-none" style={styles.bottomSafeArea}>
-          <View style={[styles.overlayCard, overlayToneStyles[overlay.tone]]}>
-            <ThemedText style={styles.overlayTitle}>{overlay.title}</ThemedText>
-            <ThemedText style={styles.overlaySubtitle}>{overlay.subtitle}</ThemedText>
-            <View style={styles.overlayActions}>
-              <Pressable onPress={() => router.back()} style={styles.secondaryAction}>
-                <ThemedText style={styles.secondaryActionText}>Projects</ThemedText>
-              </Pressable>
-              {activeSessionId || routeSessionId || !didExit ? (
-                <Pressable onPress={reconnect} style={styles.primaryAction}>
-                  <ThemedText style={styles.primaryActionText}>
-                    {didExit ? 'Reopen session' : 'Reconnect'}
-                  </ThemedText>
-                </Pressable>
-              ) : null}
-            </View>
+      {compactStatus ? (
+        <SafeAreaView edges={['bottom']} pointerEvents="none" style={styles.statusSafeArea}>
+          <View style={styles.statusCard}>
+            <ThemedText style={styles.statusText}>{compactStatus}</ThemedText>
           </View>
         </SafeAreaView>
       ) : null}
+
+      <Modal
+        animationType="slide"
+        transparent
+        visible={showTabSheet}
+        onRequestClose={() => setShowTabSheet(false)}>
+        <Pressable style={styles.sheetBackdrop} onPress={() => setShowTabSheet(false)}>
+          <View style={styles.sheetCard}>
+            <ThemedText style={styles.sheetTitle}>Terminals</ThemedText>
+            <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.sheetList}>
+              {snapshot.tabs.map((tab) => {
+                const isActive = tab.id === snapshot.activeTabId;
+                return (
+                  <View key={tab.id} style={[styles.sheetRow, isActive ? styles.sheetRowActive : null]}>
+                    <Pressable onPress={() => activateTab(tab.id)} style={styles.sheetRowMain}>
+                      <ThemedText numberOfLines={1} style={styles.sheetRowTitle}>
+                        {tab.projectName}
+                      </ThemedText>
+                      <ThemedText style={styles.sheetRowMeta}>{tab.status}</ThemedText>
+                    </Pressable>
+                    <Pressable onPress={() => closeTab(tab.id)} style={styles.sheetCloseButton}>
+                      <ThemedText style={styles.sheetCloseText}>Close</ThemedText>
+                    </Pressable>
+                  </View>
+                );
+              })}
+            </ScrollView>
+          </View>
+        </Pressable>
+      </Modal>
+
+      <Modal
+        animationType="slide"
+        transparent
+        visible={showProjectSheet}
+        onRequestClose={() => setShowProjectSheet(false)}>
+        <Pressable style={styles.sheetBackdrop} onPress={() => setShowProjectSheet(false)}>
+          <View style={styles.sheetCard}>
+            <ThemedText style={styles.sheetTitle}>Open Project In New Tab</ThemedText>
+            {projectsLoading ? (
+              <View style={styles.loadingProjects}>
+                <ActivityIndicator color="#93c5fd" />
+              </View>
+            ) : null}
+            <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.sheetList}>
+              {availableProjects.map((project) => (
+                <Pressable
+                  key={project.id}
+                  onPress={() => createTabFromProject(project)}
+                  style={styles.projectRow}>
+                  <ThemedText style={styles.projectRowTitle}>{project.name}</ThemedText>
+                  <ThemedText style={styles.projectRowMeta}>{project.path}</ThemedText>
+                </Pressable>
+              ))}
+            </ScrollView>
+          </View>
+        </Pressable>
+      </Modal>
     </View>
   );
 }
@@ -497,20 +602,17 @@ function firstParam(value?: string | string[]): string | undefined {
   return Array.isArray(value) ? value[0] : value;
 }
 
-const overlayToneStyles: Record<OverlayTone, object> = {
-  neutral: {
-    backgroundColor: 'rgba(15, 23, 42, 0.92)',
-    borderColor: 'rgba(148, 163, 184, 0.22)',
-  },
-  warning: {
-    backgroundColor: 'rgba(69, 26, 3, 0.92)',
-    borderColor: 'rgba(251, 191, 36, 0.28)',
-  },
-  danger: {
-    backgroundColor: 'rgba(69, 10, 10, 0.94)',
-    borderColor: 'rgba(248, 113, 113, 0.24)',
-  },
-};
+function normalizePersistence(value?: string): TerminalPersistenceMode | undefined {
+  if (value === 'persisted') {
+    return 'persisted';
+  }
+
+  if (value === 'ephemeral') {
+    return 'ephemeral';
+  }
+
+  return undefined;
+}
 
 const styles = StyleSheet.create({
   screen: {
@@ -550,38 +652,60 @@ const styles = StyleSheet.create({
   topBar: {
     alignItems: 'center',
     flexDirection: 'row',
-    gap: 10,
+    gap: 8,
     justifyContent: 'space-between',
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-  },
-  topBarLead: {
-    alignItems: 'center',
-    flex: 1,
-    flexDirection: 'row',
-    gap: 10,
-    minWidth: 0,
+    paddingHorizontal: 10,
+    paddingTop: 6,
+    paddingBottom: 6,
   },
   topBarActions: {
     alignItems: 'center',
     flexDirection: 'row',
-    gap: 8,
+    gap: 6,
   },
-  topBarButton: {
-    backgroundColor: '#141418',
+  activeCenter: {
+    alignItems: 'center',
+    backgroundColor: '#12121a',
     borderColor: 'rgba(255, 255, 255, 0.08)',
-    borderRadius: 999,
+    borderRadius: 12,
     borderWidth: 1,
-    paddingHorizontal: 12,
-    paddingVertical: 7,
+    flex: 1,
+    flexDirection: 'row',
+    gap: 8,
+    minWidth: 0,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+  },
+  activeCenterTextWrap: {
+    flex: 1,
+    minWidth: 0,
+  },
+  activeProjectText: {
+    color: '#f4f4f5',
+    fontFamily: Fonts.mono,
+    fontSize: 11,
+    fontWeight: '700',
+  },
+  activeMetaText: {
+    color: '#9ca3af',
+    fontFamily: Fonts.mono,
+    fontSize: 10,
+    textTransform: 'uppercase',
+  },
+  statusDot: {
+    borderRadius: 999,
+    height: 8,
+    width: 8,
   },
   iconButton: {
+    alignItems: 'center',
     backgroundColor: '#141418',
     borderColor: 'rgba(255, 255, 255, 0.08)',
     borderRadius: 999,
     borderWidth: 1,
-    paddingHorizontal: 10,
-    paddingVertical: 7,
+    height: 30,
+    justifyContent: 'center',
+    width: 30,
   },
   topBarButtonText: {
     color: '#f4f4f5',
@@ -589,109 +713,138 @@ const styles = StyleSheet.create({
     fontSize: 11,
     fontWeight: '700',
   },
-  projectBadge: {
-    alignItems: 'center',
-    backgroundColor: '#141418',
-    borderColor: 'rgba(255, 255, 255, 0.08)',
-    borderRadius: 999,
-    borderWidth: 1,
-    flex: 1,
-    maxWidth: 176,
-    minWidth: 0,
-    paddingHorizontal: 12,
-    paddingVertical: 7,
-  },
-  projectBadgeText: {
-    color: '#e4e4e7',
-    fontFamily: Fonts.mono,
-    fontSize: 11,
-    fontWeight: '600',
-  },
-  bottomSafeArea: {
-    bottom: 0,
-    left: 0,
-    position: 'absolute',
-    right: 0,
-  },
-  overlayCard: {
-    borderRadius: 26,
-    borderWidth: 1,
-    gap: 10,
-    marginHorizontal: 16,
-    marginBottom: 16,
-    padding: 18,
-  },
-  overlayTitle: {
-    color: '#fafafa',
-    fontFamily: Fonts.rounded,
-    fontSize: 20,
-  },
-  overlaySubtitle: {
-    color: '#d4d4d8',
-    fontSize: 14,
-    lineHeight: 21,
-  },
-  overlayActions: {
-    flexDirection: 'row',
-    gap: 10,
-    marginTop: 4,
-  },
-  primaryAction: {
-    alignItems: 'center',
-    backgroundColor: '#fafafa',
-    borderRadius: 16,
-    flex: 1,
-    paddingHorizontal: 14,
-    paddingVertical: 14,
-  },
-  primaryActionText: {
-    color: '#09090b',
-    fontFamily: Fonts.mono,
-    fontSize: 12,
-    fontWeight: '700',
-  },
-  secondaryAction: {
-    alignItems: 'center',
-    backgroundColor: 'rgba(20, 20, 24, 0.86)',
-    borderColor: 'rgba(255, 255, 255, 0.1)',
-    borderRadius: 16,
-    borderWidth: 1,
-    flex: 1,
-    paddingHorizontal: 14,
-    paddingVertical: 14,
-  },
-  secondaryActionText: {
-    color: '#e2e8f0',
-    fontFamily: Fonts.mono,
-    fontSize: 12,
-    fontWeight: '700',
-  },
   toolbarContainer: {
     backgroundColor: '#09090b',
-    borderTopColor: 'rgba(255, 255, 255, 0.08)',
+    borderTopColor: 'rgba(255, 255, 255, 0.07)',
     borderTopWidth: StyleSheet.hairlineWidth,
-    paddingVertical: 6,
   },
   toolbarContent: {
-    alignItems: 'center',
-    gap: 6,
-    paddingHorizontal: 8,
+    gap: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
   },
   controlKeyButton: {
-    alignItems: 'center',
-    backgroundColor: '#141418',
+    backgroundColor: '#18181b',
     borderColor: 'rgba(255, 255, 255, 0.08)',
-    borderRadius: 8,
+    borderRadius: 11,
     borderWidth: 1,
-    justifyContent: 'center',
-    minWidth: 40,
-    paddingHorizontal: 10,
-    paddingVertical: 7,
+    paddingHorizontal: 12,
+    paddingVertical: 9,
   },
   controlKeyText: {
     color: '#f4f4f5',
     fontFamily: Fonts.mono,
-    fontSize: 11,
+    fontSize: 12,
     fontWeight: '700',
+  },
+  statusSafeArea: {
+    bottom: 80,
+    left: 0,
+    position: 'absolute',
+    right: 0,
+  },
+  statusCard: {
+    alignSelf: 'center',
+    backgroundColor: 'rgba(15, 23, 42, 0.92)',
+    borderColor: 'rgba(148, 163, 184, 0.22)',
+    borderRadius: 12,
+    borderWidth: 1,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+  },
+  statusText: {
+    color: '#e2e8f0',
+    fontFamily: Fonts.mono,
+    fontSize: 11,
+  },
+  sheetBackdrop: {
+    backgroundColor: 'rgba(2, 6, 23, 0.64)',
+    flex: 1,
+    justifyContent: 'flex-end',
+  },
+  sheetCard: {
+    backgroundColor: '#09090b',
+    borderTopLeftRadius: 18,
+    borderTopRightRadius: 18,
+    maxHeight: '62%',
+    paddingHorizontal: 14,
+    paddingTop: 12,
+    paddingBottom: 18,
+  },
+  sheetTitle: {
+    color: '#f8fafc',
+    fontFamily: Fonts.rounded,
+    fontSize: 18,
+    marginBottom: 10,
+  },
+  sheetList: {
+    gap: 8,
+    paddingBottom: 10,
+  },
+  sheetRow: {
+    alignItems: 'center',
+    backgroundColor: '#111827',
+    borderColor: 'rgba(255, 255, 255, 0.08)',
+    borderRadius: 12,
+    borderWidth: 1,
+    flexDirection: 'row',
+    paddingHorizontal: 10,
+    paddingVertical: 9,
+  },
+  sheetRowActive: {
+    borderColor: 'rgba(96, 165, 250, 0.66)',
+  },
+  sheetRowMain: {
+    flex: 1,
+    minWidth: 0,
+  },
+  sheetRowTitle: {
+    color: '#f8fafc',
+    fontFamily: Fonts.mono,
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  sheetRowMeta: {
+    color: '#9ca3af',
+    fontFamily: Fonts.mono,
+    fontSize: 10,
+    textTransform: 'uppercase',
+  },
+  sheetCloseButton: {
+    borderColor: 'rgba(255, 255, 255, 0.14)',
+    borderRadius: 999,
+    borderWidth: 1,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+  },
+  sheetCloseText: {
+    color: '#d1d5db',
+    fontFamily: Fonts.mono,
+    fontSize: 10,
+    textTransform: 'uppercase',
+  },
+  loadingProjects: {
+    alignItems: 'center',
+    paddingVertical: 10,
+  },
+  projectRow: {
+    backgroundColor: '#111827',
+    borderColor: 'rgba(255, 255, 255, 0.08)',
+    borderRadius: 12,
+    borderWidth: 1,
+    paddingHorizontal: 10,
+    paddingVertical: 10,
+  },
+  projectRowTitle: {
+    color: '#f8fafc',
+    fontFamily: Fonts.mono,
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  projectRowMeta: {
+    color: '#9ca3af',
+    fontFamily: Fonts.mono,
+    fontSize: 10,
+    marginTop: 3,
   },
 });

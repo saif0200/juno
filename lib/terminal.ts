@@ -17,6 +17,17 @@ export type SessionSummary = {
   updatedAt: string;
   expiresAt: string;
   hasActiveProcess: boolean;
+  clientTabId?: string;
+  persistence?: TerminalPersistenceMode;
+};
+
+export type TerminalPersistenceMode = 'ephemeral' | 'persisted';
+
+export type CreateSessionRequest = {
+  type: 'create_session';
+  projectId: string;
+  clientTabId?: string;
+  persistence?: TerminalPersistenceMode;
 };
 
 export type ServerMessage =
@@ -39,6 +50,14 @@ export type ServerMessage =
       rows: number;
       command?: string;
       hasActiveProcess?: boolean;
+      clientTabId?: string;
+      persistence?: TerminalPersistenceMode;
+    }
+  | {
+      type: 'session_promoted';
+      sessionId: string;
+      persistence: 'persisted';
+      clientTabId?: string;
     }
   | {
       type: 'terminal_output' | 'terminal_snapshot';

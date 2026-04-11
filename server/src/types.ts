@@ -2,6 +2,7 @@ import type { IPty } from 'node-pty';
 import type WebSocket from 'ws';
 
 export type ProjectSource = 'config' | 'discovered';
+export type TerminalPersistenceMode = 'ephemeral' | 'persisted';
 
 export interface ProjectDefinition {
   id: string;
@@ -64,7 +65,8 @@ export type ClientMessageType =
   | 'terminal_resize'
   | 'resume_session'
   | 'ping'
-  | 'kill_session';
+  | 'kill_session'
+  | 'promote_session';
 
 export type ServerMessageType =
   | 'projects_list'
@@ -74,6 +76,7 @@ export type ServerMessageType =
   | 'terminal_output'
   | 'terminal_snapshot'
   | 'terminal_exit'
+  | 'session_promoted'
   | 'pong'
   | 'error';
 
@@ -88,6 +91,8 @@ export interface ListSessionsMessage {
 export interface CreateSessionMessage {
   type: 'create_session';
   projectId: string;
+  clientTabId?: string;
+  persistence?: TerminalPersistenceMode;
 }
 
 export interface TerminalInputMessage {
@@ -114,6 +119,10 @@ export interface KillSessionMessage {
   type: 'kill_session';
 }
 
+export interface PromoteSessionMessage {
+  type: 'promote_session';
+}
+
 export type ClientMessage =
   | ListProjectsMessage
   | ListSessionsMessage
@@ -122,7 +131,8 @@ export type ClientMessage =
   | TerminalResizeMessage
   | ResumeSessionMessage
   | PingMessage
-  | KillSessionMessage;
+  | KillSessionMessage
+  | PromoteSessionMessage;
 
 export interface SessionSummary {
   sessionId: string;
@@ -134,6 +144,8 @@ export interface SessionSummary {
   updatedAt: string;
   expiresAt: string;
   hasActiveProcess: boolean;
+  clientTabId?: string;
+  persistence?: TerminalPersistenceMode;
 }
 
 export interface ProjectsListMessage {
@@ -157,6 +169,8 @@ export interface SessionCreatedMessage {
   cols: number;
   rows: number;
   command: string;
+  clientTabId?: string;
+  persistence?: TerminalPersistenceMode;
 }
 
 export interface SessionResumedMessage {
@@ -170,6 +184,15 @@ export interface SessionResumedMessage {
   cols: number;
   rows: number;
   hasActiveProcess: boolean;
+  clientTabId?: string;
+  persistence?: TerminalPersistenceMode;
+}
+
+export interface SessionPromotedMessage {
+  type: 'session_promoted';
+  sessionId: string;
+  persistence: 'persisted';
+  clientTabId?: string;
 }
 
 export interface TerminalOutputMessage {
@@ -217,6 +240,7 @@ export type ServerMessage =
   | TerminalOutputMessage
   | TerminalSnapshotMessage
   | TerminalExitMessage
+  | SessionPromotedMessage
   | PongMessage
   | ErrorMessage;
 
@@ -237,4 +261,6 @@ export interface SessionRecord {
   hasExited: boolean;
   exitCode: number | null;
   signal: number | null;
+  clientTabId: string | null;
+  persistence: TerminalPersistenceMode;
 }

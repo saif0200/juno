@@ -22,12 +22,15 @@ import type {
     PingMessage,
     ProjectDefinition,
     ProjectSource,
+    PromoteSessionMessage,
     ResumeSessionMessage,
     ServerMessage,
     SessionCreatedMessage,
     SessionRecord,
+    SessionPromotedMessage,
     SessionResumedMessage,
     SessionSummary,
+    TerminalPersistenceMode,
     TerminalInputMessage,
     TerminalResizeMessage,
 } from './types';
@@ -987,6 +990,8 @@ function createSessionSummary(session: SessionRecord): SessionSummary {
     updatedAt: new Date(session.updatedAt).toISOString(),
     expiresAt: new Date(session.expiresAt).toISOString(),
     hasActiveProcess: !session.hasExited,
+    persistence: session.persistence,
+    ...(session.clientTabId ? { clientTabId: session.clientTabId } : {}),
   };
 }
 
@@ -1012,7 +1017,14 @@ function spawnClaudePty(
   });
 }
 
-function createSession(project: ProjectDefinition, socket: WebSocket | null): SessionRecord {
+function createSession(
+  project: ProjectDefinition,
+  socket: WebSocket | null,
+  options?: {
+    clientTabId?: string;
+    persistence?: TerminalPersistenceMode;
+  },
+): SessionRecord {
   const id = `session-${randomUUID()}`;
   const createdAt = now();
   const processPty = spawnClaudePty(id, DEFAULT_COLS, DEFAULT_ROWS, project.path);
@@ -1034,6 +1046,8 @@ function createSession(project: ProjectDefinition, socket: WebSocket | null): Se
     hasExited: false,
     exitCode: null,
     signal: null,
+    clientTabId: options?.clientTabId ?? null,
+    persistence: options?.persistence ?? 'ephemeral',
   };
 
   processPty.onData((data: string) => {
@@ -1130,7 +1144,27 @@ function parseMessage(raw: WebSocket.RawData): ClientMessage | null {
   }
 
   if (candidate.type === 'create_session' && typeof candidate.projectId === 'string') {
-    return { type: 'create_session', projectId: candidate.projectId };
+    const clientTabId =
+      typeof candidate.clientTabId === 'string' && candidate.clientTabId.trim().length > 0
+        ? candidate.clientTabId
+        : undefined;
+    const persistence =
+      candidate.persistence === 'persisted' || candidate.persistence === 'ephemeral'
+        ? candidate.persistence
+        : undefined;
+
+    const payload: CreateSessionMessage = {
+      type: 'create_session',
+      projectId: candidate.projectId,
+    };
+    if (clientTabId) {
+      payload.clientTabId = clientTabId;
+    }
+    if (persistence) {
+      payload.persistence = persistence;
+    }
+
+    return payload;
   }
 
   if (candidate.type === 'terminal_input' && typeof candidate.data === 'string') {
@@ -1168,6 +1202,10 @@ function parseMessage(raw: WebSocket.RawData): ClientMessage | null {
     return { type: 'kill_session' };
   }
 
+  if (candidate.type === 'promote_session') {
+    return { type: 'promote_session' };
+  }
+
   return null;
 }
 
@@ -1192,6 +1230,7 @@ function handleListProjects(socket: WebSocket): void {
 
 function handleListSessions(socket: WebSocket): void {
   const sessionList = Array.from(sessions.values())
+    .filter((session) => session.persistence === 'persisted')
     .map(createSessionSummary)
     .sort((left, right) => {
       const updatedDelta = Date.parse(right.updatedAt) - Date.parse(left.updatedAt);
@@ -1233,7 +1272,15 @@ function handleCreateSession(socket: WebSocket, message: CreateSessionMessage): 
     return null;
   }
 
-  const session = createSession(project, socket);
+  const createOptions: { clientTabId?: string; persistence?: TerminalPersistenceMode } = {};
+  if (message.clientTabId) {
+    createOptions.clientTabId = message.clientTabId;
+  }
+  if (message.persistence) {
+    createOptions.persistence = message.persistence;
+  }
+
+  const session = createSession(project, socket, createOptions);
   attachSocket(session, socket);
   console.log(`✅ New project session created: ${session.id} (${project.name})`);
 
@@ -1248,6 +1295,8 @@ function handleCreateSession(socket: WebSocket, message: CreateSessionMessage): 
     cols: session.cols,
     rows: session.rows,
     command: [CLAUDE_COMMAND, ...CLAUDE_ARGS].join(' ').trim(),
+    persistence: session.persistence,
+    ...(session.clientTabId ? { clientTabId: session.clientTabId } : {}),
   };
   sendMessage(socket, payload);
   sendSnapshot(socket, session);
@@ -1279,6 +1328,8 @@ function handleResumeSession(socket: WebSocket, message: ResumeSessionMessage): 
     cols: existingSession.cols,
     rows: existingSession.rows,
     hasActiveProcess: !existingSession.hasExited,
+    persistence: existingSession.persistence,
+    ...(existingSession.clientTabId ? { clientTabId: existingSession.clientTabId } : {}),
   };
   sendMessage(socket, payload);
   sendSnapshot(socket, existingSession);
@@ -1325,6 +1376,33 @@ function handleKillSession(socket: WebSocket, session: SessionRecord, _message: 
   sendMessage(socket, createTerminalExitMessage(session.id, session.exitCode ?? 0, session.signal));
 }
 
+function handlePromoteSession(
+  socket: WebSocket,
+  session: SessionRecord,
+  _message: PromoteSessionMessage,
+): void {
+  if (session.persistence === 'persisted') {
+    sendMessage(socket, {
+      type: 'session_promoted',
+      sessionId: session.id,
+      persistence: 'persisted',
+      ...(session.clientTabId ? { clientTabId: session.clientTabId } : {}),
+    });
+    return;
+  }
+
+  session.persistence = 'persisted';
+  refreshSession(session);
+
+  const payload: SessionPromotedMessage = {
+    type: 'session_promoted',
+    sessionId: session.id,
+    persistence: 'persisted',
+    ...(session.clientTabId ? { clientTabId: session.clientTabId } : {}),
+  };
+  sendMessage(socket, payload);
+}
+
 setInterval(cleanupExpiredSessions, CLEANUP_INTERVAL_MS);
 
 wss.on('connection', (socket: WebSocket, request: Request) => {
@@ -1347,6 +1425,8 @@ wss.on('connection', (socket: WebSocket, request: Request) => {
         cols: existingSession.cols,
         rows: existingSession.rows,
         hasActiveProcess: !existingSession.hasExited,
+        persistence: existingSession.persistence,
+        ...(existingSession.clientTabId ? { clientTabId: existingSession.clientTabId } : {}),
       };
       sendMessage(socket, payload);
       sendSnapshot(socket, existingSession);
@@ -1420,6 +1500,11 @@ wss.on('connection', (socket: WebSocket, request: Request) => {
 
       if (message.type === 'terminal_resize') {
         handleTerminalResize(activeSession, message);
+        return;
+      }
+
+      if (message.type === 'promote_session') {
+        handlePromoteSession(socket, activeSession, message);
         return;
       }
 
