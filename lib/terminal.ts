@@ -104,14 +104,17 @@ function buildTerminalHtml(xtermCss: string, xtermJs: string, fitAddonJs: string
         width: 100%;
         overflow: hidden;
         background: #020617;
+        -webkit-text-size-adjust: 100%;
       }
       body {
+        display: flex;
         position: fixed;
         inset: 0;
         overscroll-behavior: none;
         touch-action: manipulation;
       }
       #terminal {
+        flex: 1 1 auto;
         height: 100%;
         width: 100%;
         box-sizing: border-box;
@@ -122,9 +125,18 @@ function buildTerminalHtml(xtermCss: string, xtermJs: string, fitAddonJs: string
         height: 100%;
         padding: 0;
       }
+      .xterm-screen,
+      .xterm-helpers {
+        contain: strict;
+      }
       .xterm-viewport {
         overflow-y: auto !important;
         overscroll-behavior: contain;
+        scrollbar-width: none;
+        -ms-overflow-style: none;
+      }
+      .xterm-viewport::-webkit-scrollbar {
+        display: none;
       }
     </style>
   </head>
@@ -146,12 +158,15 @@ function buildTerminalHtml(xtermCss: string, xtermJs: string, fitAddonJs: string
       const term = new Terminal({
         allowTransparency: true,
         convertEol: true,
-        cursorBlink: true,
+        cursorBlink: false,
         cursorStyle: 'bar',
+        fastScrollModifier: 'shift',
         fontFamily: 'Menlo, Monaco, Consolas, monospace',
-        fontSize: 15,
-        lineHeight: 1.18,
-        scrollback: 5000,
+        fontSize: 14,
+        lineHeight: 1.08,
+        scrollSensitivity: 0.85,
+        scrollback: 1500,
+        smoothScrollDuration: 0,
         theme: {
           background: '#020617',
           foreground: '#e5eefb',

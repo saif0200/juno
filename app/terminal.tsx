@@ -1,7 +1,15 @@
-import { useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router';
+import { useLocalSearchParams, useRouter } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Keyboard, Pressable, StyleSheet, View } from 'react-native';
+import {
+  Keyboard,
+  KeyboardAvoidingView,
+  Platform,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  View,
+} from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { WebView, type WebViewMessageEvent } from 'react-native-webview';
 
@@ -31,6 +39,8 @@ export default function FullscreenTerminalScreen() {
   const webViewRef = useRef<WebView>(null);
   const socketRef = useRef<WebSocket | null>(null);
   const pingIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const outputFlushTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const pendingOutputRef = useRef('');
   const activeSessionIdRef = useRef<string | null>(null);
   const activeProjectNameRef = useRef<string | null>(null);
   const didExitRef = useRef(false);
@@ -79,6 +89,7 @@ export default function FullscreenTerminalScreen() {
   useEffect(() => {
     return () => {
       pingIntervalRef.current && clearInterval(pingIntervalRef.current);
+      outputFlushTimeoutRef.current && clearTimeout(outputFlushTimeoutRef.current);
       socketRef.current?.close();
     };
   }, []);
@@ -95,11 +106,6 @@ export default function FullscreenTerminalScreen() {
     didExitRef.current = didExit;
   }, [didExit]);
 
-  useFocusEffect(
-    useCallback(() => {
-      webViewRef.current?.injectJavaScript('window.__focusTerminal?.(); true;');
-    }, []),
-  );
 
   function escapeForBridge(value: string): string {
     return JSON.stringify(value).replace(/\u2028/g, '\\u2028').replace(/\u2029/g, '\\u2029');
@@ -114,15 +120,43 @@ export default function FullscreenTerminalScreen() {
     runInTerminal('window.__blurTerminal?.();');
   }, [runInTerminal]);
 
-  const pushTerminalData = useCallback((data: string): void => {
-    runInTerminal(`window.__writeTerminal(${escapeForBridge(data)});`);
+  const sendKey = useCallback((sequence: string): void => {
+    if (socketRef.current?.readyState === WebSocket.OPEN) {
+      socketRef.current.send(JSON.stringify({ type: 'terminal_input', data: sequence }));
+    }
+  }, []);
+
+  const flushTerminalOutput = useCallback((): void => {
+    outputFlushTimeoutRef.current = null;
+    if (!pendingOutputRef.current) {
+      return;
+    }
+
+    const nextChunk = pendingOutputRef.current;
+    pendingOutputRef.current = '';
+    runInTerminal(`window.__writeTerminal(${escapeForBridge(nextChunk)});`);
   }, [runInTerminal]);
 
+  const pushTerminalData = useCallback((data: string): void => {
+    pendingOutputRef.current += data;
+    if (outputFlushTimeoutRef.current) {
+      return;
+    }
+
+    outputFlushTimeoutRef.current = setTimeout(flushTerminalOutput, 16);
+  }, [flushTerminalOutput]);
+
   const showTerminalBanner = useCallback((title: string, subtitle?: string): void => {
+    flushTerminalOutput();
     runInTerminal(
       `window.__setTerminalBanner(${escapeForBridge(title)}, ${escapeForBridge(subtitle ?? '')});`,
     );
-  }, [runInTerminal]);
+  }, [flushTerminalOutput, runInTerminal]);
+
+  const clearTerminal = useCallback((): void => {
+    flushTerminalOutput();
+    runInTerminal('window.__clearTerminal();');
+  }, [flushTerminalOutput, runInTerminal]);
 
   const startPingLoop = useCallback((): void => {
     if (pingIntervalRef.current) {
@@ -178,7 +212,7 @@ export default function FullscreenTerminalScreen() {
           return;
         }
 
-        runInTerminal('window.__clearTerminal();');
+        clearTerminal();
         showTerminalBanner('Launching Claude', routeProjectName ?? routeProjectId);
         socket.send(
           JSON.stringify({
@@ -198,9 +232,6 @@ export default function FullscreenTerminalScreen() {
             message.type === 'session_created' ? 'Live session' : 'Session resumed',
           );
           startPingLoop();
-          if (isTerminalReady) {
-            runInTerminal('window.__focusTerminal?.();');
-          }
           return;
         }
 
@@ -248,12 +279,11 @@ export default function FullscreenTerminalScreen() {
       };
     },
     [
-      isTerminalReady,
       pushTerminalData,
       routeProjectId,
       routeProjectName,
       routeSessionId,
-      runInTerminal,
+      clearTerminal,
       showTerminalBanner,
       startPingLoop,
       url,
@@ -344,61 +374,100 @@ export default function FullscreenTerminalScreen() {
     return null;
   }, [activeSessionId, connectionStatus, didExit, exitMessage, lastError]);
 
+  const controlKeys = [
+    { label: 'ESC', sequence: '\x1b' },
+    { label: 'TAB', sequence: '\x09' },
+    { label: '↑', sequence: '\x1b[A' },
+    { label: '↓', sequence: '\x1b[B' },
+    { label: '←', sequence: '\x1b[D' },
+    { label: '→', sequence: '\x1b[C' },
+    { label: '^C', sequence: '\x03' },
+    { label: '^D', sequence: '\x04' },
+  ];
+
   return (
     <View style={styles.screen}>
       <StatusBar style="light" />
 
-      <SafeAreaView edges={['top']} style={styles.topSafeArea}>
+      <SafeAreaView edges={['top', 'left', 'right']} style={styles.topSafeArea}>
         <View style={styles.topBar}>
-          <Pressable onPress={() => router.back()} style={styles.topBarButton}>
-            <ThemedText style={styles.topBarButtonText}>Back</ThemedText>
-          </Pressable>
-          {activeProjectName || routeProjectName ? (
-            <View style={styles.projectBadge}>
-              <ThemedText style={styles.projectBadgeText}>
-                {activeProjectName ?? routeProjectName}
-              </ThemedText>
-            </View>
-          ) : null}
-          <View style={styles.topBarActions}>
-            <Pressable onPress={dismissKeyboard} style={styles.topBarButton}>
-              <ThemedText style={styles.topBarButtonText}>Hide keyboard</ThemedText>
+          <View style={styles.topBarLead}>
+            <Pressable onPress={() => router.back()} style={styles.topBarButton}>
+              <ThemedText style={styles.topBarButtonText}>Workspace</ThemedText>
             </Pressable>
-            <Pressable onPress={() => runInTerminal('window.__focusTerminal?.();')} style={styles.topBarButton}>
+            {activeProjectName || routeProjectName ? (
+              <View style={styles.projectBadge}>
+                <ThemedText numberOfLines={1} style={styles.projectBadgeText}>
+                  {activeProjectName ?? routeProjectName}
+                </ThemedText>
+              </View>
+            ) : null}
+          </View>
+          <View style={styles.topBarActions}>
+            <Pressable onPress={dismissKeyboard} style={styles.iconButton}>
+              <ThemedText style={styles.topBarButtonText}>Hide keys</ThemedText>
+            </Pressable>
+            <Pressable onPress={() => runInTerminal('window.__focusTerminal?.();')} style={styles.iconButton}>
               <ThemedText style={styles.topBarButtonText}>Focus</ThemedText>
             </Pressable>
           </View>
         </View>
       </SafeAreaView>
 
-      <View style={styles.webviewShell}>
-        {terminalHtml ? (
-          <WebView
-            ref={webViewRef}
-            allowFileAccess
-            allowsInlineMediaPlayback
-            bounces={false}
-            contentInsetAdjustmentBehavior="never"
-            hideKeyboardAccessoryView
-            javaScriptEnabled
-            keyboardDisplayRequiresUserAction={false}
-            onError={(event) => {
-              const message = event.nativeEvent.description || 'Unknown WebView error';
-              setConnectionStatus('Terminal runtime failed');
-              setLastError(`WebView failed to load: ${message}`);
-            }}
-            onMessage={handleTerminalBridgeMessage}
-            originWhitelist={['*']}
-            scrollEnabled={false}
-            source={{ html: terminalHtml, baseUrl: 'file:///' }}
-            style={styles.webview}
-          />
-        ) : (
-          <View style={styles.loadingState}>
-            <ThemedText style={styles.loadingText}>Loading terminal runtime…</ThemedText>
-          </View>
-        )}
-      </View>
+      <KeyboardAvoidingView
+        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+        style={styles.flex1}
+      >
+        <View style={styles.webviewShell}>
+          {terminalHtml ? (
+            <WebView
+              automaticallyAdjustContentInsets={false}
+              ref={webViewRef}
+              allowFileAccess
+              allowsInlineMediaPlayback
+              bounces={false}
+              contentInsetAdjustmentBehavior="never"
+              hideKeyboardAccessoryView
+              javaScriptEnabled
+              keyboardDisplayRequiresUserAction={true}
+              onError={(event) => {
+                const message = event.nativeEvent.description || 'Unknown WebView error';
+                setConnectionStatus('Terminal runtime failed');
+                setLastError(`WebView failed to load: ${message}`);
+              }}
+              onMessage={handleTerminalBridgeMessage}
+              originWhitelist={['*']}
+              scrollEnabled={false}
+              source={{ html: terminalHtml, baseUrl: 'file:///' }}
+              style={styles.webview}
+            />
+          ) : (
+            <View style={styles.loadingState}>
+              <ThemedText style={styles.loadingText}>Loading terminal runtime…</ThemedText>
+            </View>
+          )}
+        </View>
+
+        <View style={styles.toolbarContainer}>
+          <ScrollView
+            horizontal
+            keyboardShouldPersistTaps="always"
+            scrollEnabled
+            showsHorizontalScrollIndicator={false}
+            contentContainerStyle={styles.toolbarContent}
+          >
+            {controlKeys.map((key) => (
+              <Pressable
+                key={key.label}
+                onPress={() => sendKey(key.sequence)}
+                style={styles.controlKeyButton}
+              >
+                <ThemedText style={styles.controlKeyText}>{key.label}</ThemedText>
+              </Pressable>
+            ))}
+          </ScrollView>
+        </View>
+      </KeyboardAvoidingView>
 
       {overlay ? (
         <SafeAreaView edges={['bottom']} pointerEvents="box-none" style={styles.bottomSafeArea}>
@@ -448,8 +517,14 @@ const styles = StyleSheet.create({
     backgroundColor: '#020617',
     flex: 1,
   },
+  flex1: {
+    flex: 1,
+    minHeight: 0,
+  },
   webviewShell: {
     flex: 1,
+    minHeight: 0,
+    overflow: 'hidden',
   },
   webview: {
     backgroundColor: '#020617',
@@ -468,8 +543,8 @@ const styles = StyleSheet.create({
     fontSize: 14,
   },
   topSafeArea: {
-    backgroundColor: '#020617',
-    borderBottomColor: 'rgba(148, 163, 184, 0.1)',
+    backgroundColor: '#09090b',
+    borderBottomColor: 'rgba(255, 255, 255, 0.08)',
     borderBottomWidth: StyleSheet.hairlineWidth,
   },
   topBar: {
@@ -480,37 +555,54 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
     paddingVertical: 6,
   },
+  topBarLead: {
+    alignItems: 'center',
+    flex: 1,
+    flexDirection: 'row',
+    gap: 10,
+    minWidth: 0,
+  },
   topBarActions: {
     alignItems: 'center',
     flexDirection: 'row',
-    gap: 10,
+    gap: 8,
   },
   topBarButton: {
-    borderColor: 'rgba(148, 163, 184, 0.22)',
+    backgroundColor: '#141418',
+    borderColor: 'rgba(255, 255, 255, 0.08)',
     borderRadius: 999,
     borderWidth: 1,
     paddingHorizontal: 12,
     paddingVertical: 7,
   },
+  iconButton: {
+    backgroundColor: '#141418',
+    borderColor: 'rgba(255, 255, 255, 0.08)',
+    borderRadius: 999,
+    borderWidth: 1,
+    paddingHorizontal: 10,
+    paddingVertical: 7,
+  },
   topBarButtonText: {
-    color: '#e2e8f0',
+    color: '#f4f4f5',
     fontFamily: Fonts.mono,
     fontSize: 11,
     fontWeight: '700',
   },
   projectBadge: {
     alignItems: 'center',
-    backgroundColor: 'rgba(15, 23, 42, 0.38)',
-    borderColor: 'rgba(148, 163, 184, 0.14)',
+    backgroundColor: '#141418',
+    borderColor: 'rgba(255, 255, 255, 0.08)',
     borderRadius: 999,
     borderWidth: 1,
-    maxWidth: 170,
+    flex: 1,
+    maxWidth: 176,
     minWidth: 0,
     paddingHorizontal: 12,
     paddingVertical: 7,
   },
   projectBadgeText: {
-    color: '#f8fafc',
+    color: '#e4e4e7',
     fontFamily: Fonts.mono,
     fontSize: 11,
     fontWeight: '600',
@@ -522,51 +614,84 @@ const styles = StyleSheet.create({
     right: 0,
   },
   overlayCard: {
-    borderRadius: 22,
+    borderRadius: 26,
     borderWidth: 1,
     gap: 10,
-    marginHorizontal: 12,
-    marginBottom: 12,
-    padding: 16,
+    marginHorizontal: 16,
+    marginBottom: 16,
+    padding: 18,
   },
   overlayTitle: {
-    color: '#f8fafc',
+    color: '#fafafa',
     fontFamily: Fonts.rounded,
-    fontSize: 18,
+    fontSize: 20,
   },
   overlaySubtitle: {
-    color: '#cbd5e1',
-    fontSize: 13,
-    lineHeight: 18,
+    color: '#d4d4d8',
+    fontSize: 14,
+    lineHeight: 21,
   },
   overlayActions: {
     flexDirection: 'row',
     gap: 10,
+    marginTop: 4,
   },
   primaryAction: {
-    backgroundColor: '#e2e8f0',
-    borderRadius: 999,
+    alignItems: 'center',
+    backgroundColor: '#fafafa',
+    borderRadius: 16,
+    flex: 1,
     paddingHorizontal: 14,
-    paddingVertical: 10,
+    paddingVertical: 14,
   },
   primaryActionText: {
-    color: '#020617',
+    color: '#09090b',
     fontFamily: Fonts.mono,
     fontSize: 12,
     fontWeight: '700',
   },
   secondaryAction: {
-    backgroundColor: 'rgba(15, 23, 42, 0.7)',
-    borderColor: 'rgba(148, 163, 184, 0.18)',
-    borderRadius: 999,
+    alignItems: 'center',
+    backgroundColor: 'rgba(20, 20, 24, 0.86)',
+    borderColor: 'rgba(255, 255, 255, 0.1)',
+    borderRadius: 16,
     borderWidth: 1,
+    flex: 1,
     paddingHorizontal: 14,
-    paddingVertical: 10,
+    paddingVertical: 14,
   },
   secondaryActionText: {
     color: '#e2e8f0',
     fontFamily: Fonts.mono,
     fontSize: 12,
+    fontWeight: '700',
+  },
+  toolbarContainer: {
+    backgroundColor: '#09090b',
+    borderTopColor: 'rgba(255, 255, 255, 0.08)',
+    borderTopWidth: StyleSheet.hairlineWidth,
+    paddingVertical: 6,
+  },
+  toolbarContent: {
+    alignItems: 'center',
+    gap: 6,
+    paddingHorizontal: 8,
+  },
+  controlKeyButton: {
+    alignItems: 'center',
+    backgroundColor: '#141418',
+    borderColor: 'rgba(255, 255, 255, 0.08)',
+    borderRadius: 8,
+    borderWidth: 1,
+    justifyContent: 'center',
+    minWidth: 40,
+    paddingHorizontal: 10,
+    paddingVertical: 7,
+  },
+  controlKeyText: {
+    color: '#f4f4f5',
+    fontFamily: Fonts.mono,
+    fontSize: 11,
     fontWeight: '700',
   },
 });

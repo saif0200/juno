@@ -6,9 +6,9 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { ThemedText } from '@/components/themed-text';
 import { Colors, Fonts } from '@/constants/theme';
+import { useColorScheme } from '@/hooks/use-color-scheme';
 import { setPendingDeviceId, upsertSavedDevice } from '@/lib/devices';
 import { parsePairingScan } from '@/lib/pairing';
-import { useColorScheme } from '@/hooks/use-color-scheme';
 
 export default function PairDeviceScreen() {
   const colorScheme = useColorScheme() ?? 'dark';
@@ -50,36 +50,30 @@ export default function PairDeviceScreen() {
     <SafeAreaView style={[styles.safeArea, { backgroundColor: palette.background }]}>
       <View style={styles.container}>
         <View style={styles.copyBlock}>
-          <ThemedText style={styles.eyebrow}>Pair Device</ThemedText>
+          <ThemedText style={[styles.eyebrow, { color: palette.muted }]}>Pair Device</ThemedText>
           <ThemedText type="title" style={styles.title}>
-            Scan your local relay QR
+            Scan a relay QR and return to work.
           </ThemedText>
-          <ThemedText style={styles.description}>
-            Juno accepts a direct pairing payload or a local pairing endpoint URL. The scanned device
-            is saved locally and returned to the Terminal launcher.
+          <ThemedText style={[styles.description, { color: palette.muted }]}>
+            Pairing stores the relay on this phone and brings you back with that device selected.
           </ThemedText>
         </View>
 
         {!permission ? (
-          <View style={styles.stateCard}>
-            <ThemedText style={styles.stateTitle}>Checking camera permission…</ThemedText>
-          </View>
+          <StateCard palette={palette} title="Checking camera permission…" />
         ) : null}
 
         {permission && !permission.granted ? (
-          <View style={styles.stateCard}>
+          <View style={[styles.stateCard, { backgroundColor: palette.surface, borderColor: palette.border }]}>
             <ThemedText style={styles.stateTitle}>Camera access is required to scan pairing QR codes.</ThemedText>
-            <Pressable onPress={() => void requestPermission()} style={styles.primaryButton}>
-              <ThemedText style={styles.primaryButtonText}>Allow camera</ThemedText>
-            </Pressable>
-            <Pressable onPress={() => router.back()} style={styles.secondaryButton}>
-              <ThemedText style={styles.secondaryButtonText}>Use manual entry instead</ThemedText>
+            <Pressable onPress={() => void requestPermission()} style={[styles.primaryButton, { backgroundColor: palette.text }]}>
+              <ThemedText style={[styles.primaryButtonText, { color: palette.background }]}>Allow camera</ThemedText>
             </Pressable>
           </View>
         ) : null}
 
         {permission?.granted ? (
-          <View style={styles.scannerShell}>
+          <View style={[styles.scannerShell, { borderColor: palette.border }]}>
             <CameraView
               barcodeScannerSettings={{ barcodeTypes: ['qr'] }}
               facing="back"
@@ -87,33 +81,50 @@ export default function PairDeviceScreen() {
               style={styles.camera}
             />
             <View pointerEvents="none" style={styles.overlay}>
-              <View style={styles.scanFrame} />
+              <View style={styles.scanMask}>
+                <View style={styles.scanFrame} />
+              </View>
             </View>
           </View>
         ) : null}
 
         <View style={styles.footer}>
-          <ThemedText style={styles.footerText}>
-            Expected fields: `name`, `wsUrl`, optional `httpUrl`, optional `token`, optional
-            `capabilities`.
-          </ThemedText>
-          {errorMessage ? <ThemedText style={styles.errorText}>{errorMessage}</ThemedText> : null}
+          <ThemedText style={[styles.footerText, { color: palette.muted }]}>Expected payload includes a relay `wsUrl` and optional metadata.</ThemedText>
+          {errorMessage ? (
+            <ThemedText style={[styles.errorText, { color: palette.danger }]}>{errorMessage}</ThemedText>
+          ) : null}
           {permission?.granted && !scannerEnabled ? (
             <Pressable
               onPress={() => {
                 setErrorMessage(null);
                 setIsHandlingScan(false);
               }}
-              style={styles.secondaryButton}>
-              <ThemedText style={styles.secondaryButtonText}>Scan another code</ThemedText>
+              style={[styles.secondaryButton, { backgroundColor: palette.surfaceMuted, borderColor: palette.border }]}>
+              <ThemedText style={[styles.secondaryButtonText, { color: palette.text }]}>Scan another code</ThemedText>
             </Pressable>
           ) : null}
-          <Pressable onPress={() => router.back()} style={styles.secondaryButton}>
-            <ThemedText style={styles.secondaryButtonText}>Back to Terminal</ThemedText>
+          <Pressable
+            onPress={() => router.back()}
+            style={[styles.secondaryButton, { backgroundColor: palette.surfaceMuted, borderColor: palette.border }]}>
+            <ThemedText style={[styles.secondaryButtonText, { color: palette.text }]}>Back to workspace</ThemedText>
           </Pressable>
         </View>
       </View>
     </SafeAreaView>
+  );
+}
+
+function StateCard({
+  palette,
+  title,
+}: {
+  palette: (typeof Colors)['light'];
+  title: string;
+}) {
+  return (
+    <View style={[styles.stateCard, { backgroundColor: palette.surface, borderColor: palette.border }]}>
+      <ThemedText style={styles.stateTitle}>{title}</ThemedText>
+    </View>
   );
 }
 
@@ -123,100 +134,104 @@ const styles = StyleSheet.create({
   },
   container: {
     flex: 1,
-    gap: 20,
+    gap: 22,
     paddingHorizontal: 20,
-    paddingVertical: 16,
+    paddingVertical: 18,
   },
   copyBlock: {
-    gap: 8,
+    gap: 10,
   },
   eyebrow: {
-    color: '#0f766e',
     fontFamily: Fonts.mono,
-    fontSize: 12,
-    letterSpacing: 1.4,
+    fontSize: 11,
+    letterSpacing: 1,
     textTransform: 'uppercase',
   },
   title: {
     fontFamily: Fonts.rounded,
-    lineHeight: 38,
+    fontSize: 32,
+    lineHeight: 36,
+    maxWidth: 320,
   },
   description: {
-    color: '#64748b',
+    fontSize: 15,
+    lineHeight: 24,
+    maxWidth: 340,
   },
   stateCard: {
     alignItems: 'center',
-    backgroundColor: '#ecfeff',
-    borderColor: '#99f6e4',
-    borderRadius: 24,
+    borderRadius: 28,
     borderWidth: 1,
     gap: 14,
-    padding: 20,
+    padding: 22,
   },
   stateTitle: {
     fontFamily: Fonts.rounded,
-    fontSize: 18,
+    fontSize: 20,
+    lineHeight: 26,
     textAlign: 'center',
   },
   scannerShell: {
+    borderRadius: 32,
+    borderWidth: 1,
     flex: 1,
-    minHeight: 320,
+    minHeight: 340,
     overflow: 'hidden',
-    borderRadius: 28,
   },
   camera: {
     flex: 1,
   },
   overlay: {
     ...StyleSheet.absoluteFillObject,
+  },
+  scanMask: {
+    ...StyleSheet.absoluteFillObject,
     alignItems: 'center',
+    backgroundColor: 'rgba(9, 9, 11, 0.18)',
     justifyContent: 'center',
   },
   scanFrame: {
     borderColor: 'rgba(255,255,255,0.92)',
-    borderRadius: 28,
+    borderRadius: 30,
     borderWidth: 3,
-    height: 240,
-    width: 240,
+    height: 230,
+    width: 230,
   },
   footer: {
     gap: 12,
   },
   footerText: {
-    color: '#64748b',
     fontFamily: Fonts.mono,
     fontSize: 12,
     lineHeight: 18,
   },
   errorText: {
-    color: '#dc2626',
     fontFamily: Fonts.mono,
     fontSize: 12,
+    lineHeight: 18,
   },
   primaryButton: {
-    backgroundColor: '#0f766e',
-    borderRadius: 999,
+    alignItems: 'center',
+    borderRadius: 18,
     paddingHorizontal: 18,
-    paddingVertical: 12,
+    paddingVertical: 16,
+    width: '100%',
   },
   primaryButtonText: {
-    color: '#f8fafc',
-    fontFamily: Fonts.mono,
-    fontSize: 13,
+    fontFamily: Fonts.rounded,
+    fontSize: 16,
     fontWeight: '700',
   },
   secondaryButton: {
     alignItems: 'center',
-    borderColor: '#cbd5e1',
-    borderRadius: 999,
+    borderRadius: 18,
     borderWidth: 1,
     paddingHorizontal: 18,
-    paddingVertical: 12,
+    paddingVertical: 15,
   },
   secondaryButtonText: {
-    color: '#334155',
     fontFamily: Fonts.mono,
     fontSize: 13,
-    fontWeight: '600',
+    fontWeight: '700',
   },
 });
