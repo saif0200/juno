@@ -1,17 +1,39 @@
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
-import { useRouter } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ActivityIndicator, type GestureResponderEvent, Keyboard, Pressable, ScrollView, StyleSheet, TextInput, View } from 'react-native';
+import {
+  ActivityIndicator,
+  type GestureResponderEvent,
+  Keyboard,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TextInput,
+  View,
+} from 'react-native';
 import Animated, { FadeInLeft, FadeInRight, FadeOutLeft, FadeOutRight } from 'react-native-reanimated';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { WebView, type WebViewMessageEvent } from 'react-native-webview';
 
-import { ThemedText } from '@/components/themed-text';
 import { Fonts } from '@/constants/theme';
 import { detectEditorLanguage, loadEditorHtml, type EditorBridgeMessage } from '@/lib/editor';
 import { type WorkspaceFileEntry } from '@/lib/terminal';
 import { terminalTabsManager, type TabsSnapshot } from '@/lib/terminal-tabs';
+
+const C = {
+  bg: '#181818',
+  surface: '#1d1d1d',
+  surfaceActive: '#2a282a',
+  selectionBg: '#163761',
+  border: '#383838',
+  text: '#d1d1d1',
+  muted: '#7a797a',
+  accent: '#228df2',
+  success: '#15ac91',
+  danger: '#f14c4c',
+  warning: '#ea7620',
+};
 
 type ExplorerNode = {
   entry: WorkspaceFileEntry;
@@ -22,11 +44,8 @@ type ExplorerNode = {
   children: string[];
 };
 
-function getLeftIcon(kind: 'directory' | 'file', name?: string): { name: keyof typeof MaterialIcons.glyphMap; color: string } {
-  if (kind === 'directory') {
-    return { name: 'folder', color: '#e8b84b' };
-  }
-
+function getFileIcon(kind: 'directory' | 'file', name?: string): { name: keyof typeof MaterialIcons.glyphMap; color: string } {
+  if (kind === 'directory') return { name: 'folder', color: '#e8b84b' };
   const ext = name?.split('.').pop()?.toLowerCase() ?? '';
   switch (ext) {
     case 'js':   return { name: 'javascript',        color: '#f0c040' };
@@ -35,30 +54,16 @@ function getLeftIcon(kind: 'directory' | 'file', name?: string): { name: keyof t
     case 'tsx':  return { name: 'code',              color: '#61dafb' };
     case 'html': return { name: 'html',              color: '#e44d26' };
     case 'css':  return { name: 'css',               color: '#264de4' };
-    case 'scss': return { name: 'style',             color: '#cc6699' };
     case 'json': return { name: 'data-object',       color: '#fbc02d' };
     case 'md':   return { name: 'article',           color: '#88a8b4' };
-    case 'txt':  return { name: 'article',           color: '#97a1b1' };
-    case 'png': case 'jpg': case 'jpeg': case 'gif':
-                 return { name: 'image',             color: '#a78bfa' };
-    case 'svg':  return { name: 'image',             color: '#ffb300' };
     case 'env':  return { name: 'lock',              color: '#fdd835' };
-    default:     return { name: 'insert-drive-file', color: '#6b7280' };
+    case 'png': case 'jpg': case 'jpeg': case 'gif': case 'svg':
+                 return { name: 'image',             color: '#a78bfa' };
+    default:     return { name: 'insert-drive-file', color: '#52525b' };
   }
-}
-
-function getRightChevron(kind: 'directory' | 'file', expanded?: boolean): { name: keyof typeof MaterialIcons.glyphMap; color: string } | null {
-  if (kind === 'directory') {
-    return {
-      name: expanded ? 'expand-more' : 'chevron-right',
-      color: '#6b7280'
-    };
-  }
-  return null;
 }
 
 export default function ExplorerTabScreen() {
-  const router = useRouter();
   const editorWebViewRef = useRef<WebView>(null);
   const blockTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -74,7 +79,6 @@ export default function ExplorerTabScreen() {
   const [isFileDirty, setIsFileDirty] = useState(false);
   const [isSavingFile, setIsSavingFile] = useState(false);
   const [isWebViewBlocked, setIsWebViewBlocked] = useState(false);
-  const [searchQuery, setSearchQuery] = useState('');
   const [isCreatingFolder, setIsCreatingFolder] = useState(false);
   const [newFolderName, setNewFolderName] = useState('');
 
@@ -82,15 +86,12 @@ export default function ExplorerTabScreen() {
     () => snapshot.tabs.find((tab) => tab.id === snapshot.activeTabId) ?? null,
     [snapshot.activeTabId, snapshot.tabs],
   );
-  const showFullEditor = Boolean(activeFilePath);
-  const paneMode = showFullEditor ? 'editor' : 'explorer';
+  const paneMode = activeFilePath ? 'editor' : 'explorer';
 
   const escapeForBridge = useCallback(
-    (value: string): string =>
-      JSON.stringify(value).replace(/\u2028/g, '\\u2028').replace(/\u2029/g, '\\u2029'),
+    (value: string): string => JSON.stringify(value).replace(/\u2028/g, '\\u2028').replace(/\u2029/g, '\\u2029'),
     [],
   );
-
   const runInEditor = useCallback((script: string): void => {
     editorWebViewRef.current?.injectJavaScript(`${script}\ntrue;`);
   }, []);
@@ -108,225 +109,118 @@ export default function ExplorerTabScreen() {
   }, []);
 
   useEffect(() => {
-    const unsubscribe = terminalTabsManager.subscribe((event) => {
-      if (event.type === 'tabs_changed') {
-        setSnapshot(event.snapshot);
-      }
+    const unsub = terminalTabsManager.subscribe((event) => {
+      if (event.type === 'tabs_changed') setSnapshot(event.snapshot);
     });
-
-    return unsubscribe;
+    return unsub;
   }, []);
 
   useEffect(() => {
-    return () => {
-      if (blockTimeoutRef.current) clearTimeout(blockTimeoutRef.current);
-    };
+    return () => { if (blockTimeoutRef.current) clearTimeout(blockTimeoutRef.current); };
   }, []);
 
   useEffect(() => {
     let isMounted = true;
-
-    async function loadRuntime(): Promise<void> {
+    async function load(): Promise<void> {
       try {
         const html = await loadEditorHtml();
-        if (!isMounted) {
-          return;
-        }
-
-        setEditorHtml(html);
+        if (isMounted) setEditorHtml(html);
       } catch (error) {
-        if (!isMounted) {
-          return;
-        }
-
-        const message = error instanceof Error ? error.message : String(error);
-        setStatusMessage(`Failed to load editor runtime: ${message}`);
+        if (isMounted) setStatusMessage(`Editor runtime error: ${error instanceof Error ? error.message : String(error)}`);
       }
     }
-
-    void loadRuntime();
-
-    return () => {
-      isMounted = false;
-    };
+    void load();
+    return () => { isMounted = false; };
   }, []);
 
   const loadExplorerRoot = useCallback(async (): Promise<void> => {
     if (!activeTab) {
       setExplorerRoots([]);
       setExplorerNodes({});
-      setStatusMessage('No active terminal tab. Open a session from Workspace first.');
+      setStatusMessage('No active session. Open a project from Workspace.');
       return;
     }
-
     setIsExplorerLoading(true);
     const result = await terminalTabsManager.listFilesForActive('');
     setIsExplorerLoading(false);
-
-    if (result.error) {
-      setStatusMessage(result.error);
-      return;
-    }
-
-    const nextNodes: Record<string, ExplorerNode> = {};
+    if (result.error) { setStatusMessage(result.error); return; }
+    const next: Record<string, ExplorerNode> = {};
     for (const entry of result.entries) {
-      nextNodes[entry.path] = {
-        entry,
-        depth: 0,
-        expanded: false,
-        loading: false,
-        loaded: false,
-        children: [],
-      };
+      next[entry.path] = { entry, depth: 0, expanded: false, loading: false, loaded: false, children: [] };
     }
-
-    setExplorerNodes(nextNodes);
-    setExplorerRoots(result.entries.map((entry) => entry.path));
+    setExplorerNodes(next);
+    setExplorerRoots(result.entries.map((e) => e.path));
     setStatusMessage(null);
   }, [activeTab]);
 
-  useEffect(() => {
-    void loadExplorerRoot();
-  }, [activeTab?.id, loadExplorerRoot]);
+  useEffect(() => { void loadExplorerRoot(); }, [activeTab?.id, loadExplorerRoot]);
 
-  const openFile = useCallback(async (relativePath: string): Promise<void> => {
-    const result = await terminalTabsManager.readFileForActive(relativePath);
-    if (result.error || result.content === null) {
-      setStatusMessage(result.error ?? 'Unable to read file.');
-      return;
-    }
-
+  const openFile = useCallback(async (path: string): Promise<void> => {
+    const result = await terminalTabsManager.readFileForActive(path);
+    if (result.error || result.content === null) { setStatusMessage(result.error ?? 'Unable to read file.'); return; }
     setActiveFilePath(result.path);
     setActiveFileContent(result.content);
     setIsFileDirty(false);
     setStatusMessage(null);
   }, []);
 
-  const toggleDirectory = useCallback(
-    async (relativePath: string): Promise<void> => {
-      const node = explorerNodes[relativePath];
-      if (!node || node.entry.kind !== 'directory') {
-        return;
+  const toggleDirectory = useCallback(async (path: string): Promise<void> => {
+    const node = explorerNodes[path];
+    if (!node || node.entry.kind !== 'directory') return;
+    if (node.loaded) {
+      setExplorerNodes((prev) => ({ ...prev, [path]: { ...prev[path], expanded: !prev[path].expanded } }));
+      return;
+    }
+    setExplorerNodes((prev) => ({ ...prev, [path]: { ...prev[path], expanded: true, loading: true } }));
+    const result = await terminalTabsManager.listFilesForActive(path);
+    if (result.error) {
+      setStatusMessage(result.error);
+      setExplorerNodes((prev) => ({ ...prev, [path]: { ...prev[path], loading: false } }));
+      return;
+    }
+    setExplorerNodes((prev) => {
+      const next = { ...prev };
+      const parentDepth = prev[path]?.depth ?? 0;
+      next[path] = { ...prev[path], expanded: true, loading: false, loaded: true, children: result.entries.map((e) => e.path) };
+      for (const entry of result.entries) {
+        next[entry.path] = { entry, depth: parentDepth + 1, expanded: false, loading: false, loaded: false, children: [] };
       }
+      return next;
+    });
+  }, [explorerNodes]);
 
-      if (node.loaded) {
-        setExplorerNodes((prev) => ({
-          ...prev,
-          [relativePath]: {
-            ...prev[relativePath],
-            expanded: !prev[relativePath].expanded,
-          },
-        }));
-        return;
-      }
-
-      setExplorerNodes((prev) => ({
-        ...prev,
-        [relativePath]: {
-          ...prev[relativePath],
-          expanded: true,
-          loading: true,
-        },
-      }));
-
-      const result = await terminalTabsManager.listFilesForActive(relativePath);
-      if (result.error) {
-        setStatusMessage(result.error);
-        setExplorerNodes((prev) => ({
-          ...prev,
-          [relativePath]: {
-            ...prev[relativePath],
-            loading: false,
-          },
-        }));
-        return;
-      }
-
-      setExplorerNodes((prev) => {
-        const next = { ...prev };
-        const parentDepth = prev[relativePath]?.depth ?? 0;
-        const children = result.entries.map((entry) => entry.path);
-
-        next[relativePath] = {
-          ...prev[relativePath],
-          expanded: true,
-          loading: false,
-          loaded: true,
-          children,
-        };
-
-        for (const entry of result.entries) {
-          next[entry.path] = {
-            entry,
-            depth: parentDepth + 1,
-            expanded: false,
-            loading: false,
-            loaded: false,
-            children: [],
-          };
-        }
-
-        return next;
-      });
-    },
-    [explorerNodes],
-  );
-
-  const visibleExplorerNodes = useMemo(() => {
+  const visibleNodes = useMemo(() => {
     const ordered: ExplorerNode[] = [];
-
     function walk(paths: string[]): void {
-      for (const nodePath of paths) {
-        const node = explorerNodes[nodePath];
-        if (!node) {
-          continue;
-        }
-
+      for (const p of paths) {
+        const node = explorerNodes[p];
+        if (!node) continue;
         ordered.push(node);
-        if (node.entry.kind === 'directory' && node.expanded && node.children.length > 0) {
-          walk(node.children);
-        }
+        if (node.entry.kind === 'directory' && node.expanded && node.children.length > 0) walk(node.children);
       }
     }
-
     walk(explorerRoots);
     return ordered;
   }, [explorerNodes, explorerRoots]);
 
   useEffect(() => {
-    if (!isEditorReady || !activeFilePath) {
-      return;
-    }
-
+    if (!isEditorReady || !activeFilePath) return;
     const language = detectEditorLanguage(activeFilePath);
     runInEditor(`window.__setEditorContent(${escapeForBridge(activeFileContent)}, ${escapeForBridge(language)});`);
   }, [activeFileContent, activeFilePath, escapeForBridge, isEditorReady, runInEditor]);
 
-  const saveCurrentFileContent = useCallback(
-    async (content: string): Promise<void> => {
-      if (!activeFilePath) {
-        setIsSavingFile(false);
-        return;
-      }
-
-      const result = await terminalTabsManager.writeFileForActive(activeFilePath, content);
-      setIsSavingFile(false);
-
-      if (result.error) {
-        setStatusMessage(result.error);
-        return;
-      }
-
-      setActiveFileContent(content);
-      setIsFileDirty(false);
-      setStatusMessage(`Saved ${activeFilePath}`);
-    },
-    [activeFilePath],
-  );
+  const saveCurrentFileContent = useCallback(async (content: string): Promise<void> => {
+    if (!activeFilePath) { setIsSavingFile(false); return; }
+    const result = await terminalTabsManager.writeFileForActive(activeFilePath, content);
+    setIsSavingFile(false);
+    if (result.error) { setStatusMessage(result.error); return; }
+    setActiveFileContent(content);
+    setIsFileDirty(false);
+    setStatusMessage(`Saved`);
+  }, [activeFilePath]);
 
   function handleEditorBridgeMessage(event: WebViewMessageEvent): void {
     const message = JSON.parse(event.nativeEvent.data) as EditorBridgeMessage;
-
     if (message.type === 'editor_ready') {
       setIsEditorReady(true);
       if (activeFilePath) {
@@ -335,229 +229,174 @@ export default function ExplorerTabScreen() {
       }
       return;
     }
-
-    if (message.type === 'editor_runtime_error') {
-      setStatusMessage(`Editor runtime error: ${message.message}`);
-      return;
-    }
-
-    if (message.type === 'editor_content_changed') {
-      setIsFileDirty(true);
-      return;
-    }
-
+    if (message.type === 'editor_runtime_error') { setStatusMessage(`Editor error: ${message.message}`); return; }
+    if (message.type === 'editor_content_changed') { setIsFileDirty(true); return; }
     setIsSavingFile(true);
     void saveCurrentFileContent(message.content);
   }
 
   function saveActiveFile(): void {
-    if (!activeFilePath || !isEditorReady) {
-      return;
-    }
-
+    if (!activeFilePath || !isEditorReady) return;
     setIsSavingFile(true);
     runInEditor('window.__prepareSave && window.__prepareSave();');
   }
 
-  function closeEditorView(): void {
-    setActiveFilePath(null);
-    setActiveFileContent('');
-    setIsFileDirty(false);
-  }
-
   function createNewFolder(): void {
-    const folderName = newFolderName.trim();
-    if (!folderName) {
-      setStatusMessage('Folder name cannot be empty');
-      return;
-    }
-
-    // Use the first root as the parent directory
-    const parentPath = explorerRoots[0] ?? '.';
-    const newPath = `${parentPath}/${folderName}`;
-
-    // Send mkdir command to the active terminal session
-    terminalTabsManager.sendInputToActive(`mkdir -p "${newPath}"\n`);
-    setStatusMessage(`Creating folder: ${folderName}`);
+    const name = newFolderName.trim();
+    if (!name) { setStatusMessage('Folder name cannot be empty'); return; }
+    const parent = explorerRoots[0] ?? '.';
+    terminalTabsManager.sendInputToActive(`mkdir -p "${parent}/${name}"\n`);
     setNewFolderName('');
     setIsCreatingFolder(false);
-
-    // Reload explorer data after a short delay to let the shell command execute
-    setTimeout(() => {
-      void loadExplorerRoot();
-    }, 800);
-  }
-
-  function renderExplorerPane(): React.ReactNode {
-    return (
-      <View style={styles.explorerPane}>
-        <View style={styles.paneHeader}>
-          <ThemedText style={styles.paneHeaderTitle}>EXPLORER</ThemedText>
-          <View style={styles.paneHeaderActions}>
-            <Pressable onPress={() => setIsCreatingFolder(!isCreatingFolder)} style={styles.headerIconButton}>
-              <MaterialIcons color="#dbe5f5" name="create-new-folder" size={16} />
-            </Pressable>
-            <Pressable style={styles.headerIconButton}>
-              <MaterialIcons color="#dbe5f5" name="search" size={16} />
-            </Pressable>
-          </View>
-        </View>
-        {isCreatingFolder ? (
-          <View style={styles.createFolderInput}>
-            <TextInput
-              style={styles.folderInputField}
-              placeholder="Folder name"
-              placeholderTextColor="#6b7280"
-              value={newFolderName}
-              onChangeText={setNewFolderName}
-              onSubmitEditing={createNewFolder}
-              autoFocus
-            />
-            <Pressable onPress={createNewFolder} style={styles.folderInputButton}>
-              <MaterialIcons color="#4f9cf9" name="check" size={16} />
-            </Pressable>
-            <Pressable onPress={() => { setIsCreatingFolder(false); setNewFolderName(''); }} style={styles.folderInputButton}>
-              <MaterialIcons color="#97a1b1" name="close" size={16} />
-            </Pressable>
-          </View>
-        ) : null}
-        {isExplorerLoading ? (
-          <View style={styles.loaderWrap}>
-            <ActivityIndicator color="#93c5fd" />
-          </View>
-        ) : (
-          <ScrollView contentContainerStyle={styles.explorerList}>
-            {visibleExplorerNodes.map((node) => {
-              const isActive = node.entry.path === activeFilePath;
-              const indent = 10 + node.depth * 14;
-              return (
-                <Pressable
-                  key={node.entry.path}
-                  onPress={() => {
-                    if (node.entry.kind === 'directory') {
-                      void toggleDirectory(node.entry.path);
-                      return;
-                    }
-                    void openFile(node.entry.path);
-                  }}
-                  style={[styles.explorerRow, isActive ? styles.explorerRowActive : null]}>
-                  <View style={[styles.explorerRowInner, { paddingLeft: indent }]}>
-                    {(() => {
-                      const icon = getLeftIcon(node.entry.kind, node.entry.name);
-                      return <MaterialIcons name={icon.name} size={14} color={icon.color} style={styles.explorerLeftIcon} />;
-                    })()}
-                    <ThemedText numberOfLines={1} style={styles.explorerLabel}>
-                      {node.entry.name}
-                    </ThemedText>
-                    {node.loading ? <ActivityIndicator size="small" color="#94a3b8" /> : null}
-                    {(() => {
-                      const chevron = getRightChevron(node.entry.kind, node.expanded);
-                      return chevron ? <MaterialIcons name={chevron.name} size={16} color={chevron.color} style={styles.explorerChevron} /> : null;
-                    })()}
-                  </View>
-                </Pressable>
-              );
-            })}
-            {visibleExplorerNodes.length === 0 ? (
-              <View style={styles.emptyFilesWrap}>
-                <ThemedText style={styles.emptyFilesText}>No files found for this project.</ThemedText>
-              </View>
-            ) : null}
-          </ScrollView>
-        )}
-      </View>
-    );
-  }
-
-  function renderEditorPane(): React.ReactNode {
-    return (
-      <View style={styles.editorPane}>
-        {activeFilePath ? (
-          <>
-            <View style={styles.editorHeaderShell}>
-              <View style={styles.editorHeaderMain}>
-                <View style={styles.editorHeaderLeft}>
-                  <Pressable onPress={closeEditorView} style={styles.headerIconButton}>
-                    <MaterialIcons color="#dbe5f5" name="menu" size={18} />
-                  </Pressable>
-                </View>
-
-                <View style={styles.editorHeaderRight}>
-                  <Pressable
-                    disabled={!activeFilePath || isSavingFile}
-                    onPress={saveActiveFile}
-                    style={[styles.headerIconButton, !activeFilePath || isSavingFile ? styles.headerIconButtonDisabled : null]}>
-                    <MaterialIcons color={isFileDirty ? '#f8c34a' : '#dbe5f5'} name="save" size={18} />
-                  </Pressable>
-                  <Pressable style={styles.headerIconButton}>
-                    <MaterialIcons color="#dbe5f5" name="search" size={18} />
-                  </Pressable>
-                  <Pressable style={styles.headerIconButton}>
-                    <MaterialIcons color="#dbe5f5" name="create-new-folder" size={18} />
-                  </Pressable>
-                </View>
-              </View>
-            </View>
-
-            <View style={styles.editorViewport}>
-              {editorHtml ? (
-                <View onTouchStart={preventKeyboardDismiss} pointerEvents={isWebViewBlocked ? 'none' : 'auto'} style={styles.editorWebviewWrap}>
-                  <WebView
-                    ref={editorWebViewRef}
-                    allowFileAccess
-                    bounces={false}
-                    hideKeyboardAccessoryView
-                    javaScriptEnabled
-                    keyboardDisplayRequiresUserAction
-                    onError={(event) => {
-                      const message = event.nativeEvent.description || 'Unknown editor WebView error';
-                      setStatusMessage(`Editor failed to load: ${message}`);
-                    }}
-                    onMessage={handleEditorBridgeMessage}
-                    originWhitelist={['*']}
-                    source={{ html: editorHtml, baseUrl: 'file:///' }}
-                    style={styles.editorWebview}
-                  />
-                </View>
-              ) : (
-                <View style={styles.loaderWrap}>
-                  <ActivityIndicator color="#93c5fd" />
-                </View>
-              )}
-            </View>
-          </>
-        ) : (
-          <View style={styles.emptyState}>
-            <ThemedText style={styles.emptyTitle}>Open a file</ThemedText>
-            <ThemedText style={styles.emptyText}>
-              Pick a file from the tree to start editing.
-            </ThemedText>
-          </View>
-        )}
-      </View>
-    );
+    setTimeout(() => void loadExplorerRoot(), 800);
   }
 
   return (
     <View onTouchStart={dismissSoftKeyboard} style={styles.screen}>
       <StatusBar style="light" />
       <SafeAreaView edges={['top', 'left', 'right']} style={styles.safeArea}>
-        <View style={styles.layout}>
-          <Animated.View
-            key={paneMode}
-            entering={paneMode === 'editor' ? FadeInRight.duration(180) : FadeInLeft.duration(180)}
-            exiting={paneMode === 'editor' ? FadeOutLeft.duration(140) : FadeOutRight.duration(140)}
-            style={styles.paneSurface}>
-            {showFullEditor ? renderEditorPane() : renderExplorerPane()}
-          </Animated.View>
-        </View>
+        <Animated.View
+          key={paneMode}
+          entering={paneMode === 'editor' ? FadeInRight.duration(160) : FadeInLeft.duration(160)}
+          exiting={paneMode === 'editor' ? FadeOutLeft.duration(120) : FadeOutRight.duration(120)}
+          style={styles.pane}>
+
+          {/* Header */}
+          <View style={styles.header}>
+            {paneMode === 'editor' && activeFilePath ? (
+              <Pressable onPress={() => { setActiveFilePath(null); setActiveFileContent(''); setIsFileDirty(false); }} style={styles.headerBtn}>
+                <MaterialIcons color={C.muted} name="chevron-left" size={20} />
+              </Pressable>
+            ) : (
+              <Text style={styles.headerLabel}>EXPLORER</Text>
+            )}
+
+            {paneMode === 'editor' && activeFilePath ? (
+              <Text style={styles.headerFile} numberOfLines={1}>
+                {activeFilePath.split('/').pop()}
+                {isFileDirty ? <Text style={{ color: C.warning }}> ●</Text> : null}
+              </Text>
+            ) : null}
+
+            <View style={styles.headerActions}>
+              {paneMode === 'editor' ? (
+                <Pressable
+                  onPress={saveActiveFile}
+                  disabled={!activeFilePath || isSavingFile}
+                  style={[styles.headerBtn, (!activeFilePath || isSavingFile) && styles.headerBtnDisabled]}>
+                  <MaterialIcons color={isFileDirty ? C.warning : C.muted} name="save" size={18} />
+                </Pressable>
+              ) : (
+                <>
+                  <Pressable onPress={() => setIsCreatingFolder(!isCreatingFolder)} style={styles.headerBtn}>
+                    <MaterialIcons color={C.muted} name="create-new-folder" size={18} />
+                  </Pressable>
+                  <Pressable onPress={() => void loadExplorerRoot()} style={styles.headerBtn}>
+                    <MaterialIcons color={C.muted} name="refresh" size={18} />
+                  </Pressable>
+                </>
+              )}
+            </View>
+          </View>
+
+          {/* New folder input */}
+          {isCreatingFolder && paneMode === 'explorer' ? (
+            <View style={styles.folderInputRow}>
+              <TextInput
+                autoFocus
+                onChangeText={setNewFolderName}
+                onSubmitEditing={createNewFolder}
+                placeholder="folder name"
+                placeholderTextColor={C.muted}
+                style={styles.folderInput}
+                value={newFolderName}
+              />
+              <Pressable onPress={createNewFolder} style={styles.headerBtn}>
+                <MaterialIcons color={C.accent} name="check" size={16} />
+              </Pressable>
+              <Pressable onPress={() => { setIsCreatingFolder(false); setNewFolderName(''); }} style={styles.headerBtn}>
+                <MaterialIcons color={C.muted} name="close" size={16} />
+              </Pressable>
+            </View>
+          ) : null}
+
+          {/* Explorer pane */}
+          {paneMode === 'explorer' ? (
+            isExplorerLoading ? (
+              <View style={styles.centered}>
+                <ActivityIndicator color={C.muted} size="small" />
+              </View>
+            ) : visibleNodes.length === 0 ? (
+              <View style={styles.centered}>
+                <Text style={styles.emptyText}>
+                  {activeTab ? 'No files found.' : 'No active session.'}
+                </Text>
+              </View>
+            ) : (
+              <ScrollView contentContainerStyle={styles.fileList}>
+                {visibleNodes.map((node) => {
+                  const icon = getFileIcon(node.entry.kind, node.entry.name);
+                  const isActive = node.entry.path === activeFilePath;
+                  const indent = 12 + node.depth * 14;
+                  return (
+                    <Pressable
+                      key={node.entry.path}
+                      onPress={() => {
+                        if (node.entry.kind === 'directory') void toggleDirectory(node.entry.path);
+                        else void openFile(node.entry.path);
+                      }}
+                      style={[styles.fileRow, isActive && styles.fileRowActive]}>
+                      <View style={[styles.fileRowInner, { paddingLeft: indent }]}>
+                        {node.entry.kind === 'directory' ? (
+                          <MaterialIcons
+                            color={C.muted}
+                            name={node.expanded ? 'expand-more' : 'chevron-right'}
+                            size={14}
+                            style={{ width: 14 }}
+                          />
+                        ) : <View style={{ width: 14 }} />}
+                        <MaterialIcons color={icon.color} name={icon.name} size={14} />
+                        <Text style={styles.fileName} numberOfLines={1}>{node.entry.name}</Text>
+                        {node.loading ? <ActivityIndicator size="small" color={C.muted} /> : null}
+                      </View>
+                    </Pressable>
+                  );
+                })}
+              </ScrollView>
+            )
+          ) : null}
+
+          {/* Editor pane */}
+          {paneMode === 'editor' ? (
+            <View onTouchStart={preventKeyboardDismiss} pointerEvents={isWebViewBlocked ? 'none' : 'auto'} style={styles.editorWrap}>
+              {editorHtml ? (
+                <WebView
+                  ref={editorWebViewRef}
+                  allowFileAccess
+                  bounces={false}
+                  hideKeyboardAccessoryView
+                  javaScriptEnabled
+                  keyboardDisplayRequiresUserAction
+                  onError={(e) => setStatusMessage(`Editor failed: ${e.nativeEvent.description}`)}
+                  onMessage={handleEditorBridgeMessage}
+                  originWhitelist={['*']}
+                  source={{ html: editorHtml, baseUrl: 'file:///' }}
+                  style={styles.editorWebview}
+                />
+              ) : (
+                <View style={styles.centered}>
+                  <ActivityIndicator color={C.muted} size="small" />
+                </View>
+              )}
+            </View>
+          ) : null}
+
+        </Animated.View>
       </SafeAreaView>
 
       {statusMessage ? (
-        <SafeAreaView edges={['bottom']} pointerEvents="none" style={styles.statusSafeArea}>
-          <View style={styles.statusCard}>
-            <ThemedText style={styles.statusText}>{statusMessage}</ThemedText>
-          </View>
+        <SafeAreaView edges={['bottom']} pointerEvents="none" style={styles.statusBar}>
+          <Text style={styles.statusText} numberOfLines={1}>{statusMessage}</Text>
         </SafeAreaView>
       ) : null}
     </View>
@@ -565,239 +404,68 @@ export default function ExplorerTabScreen() {
 }
 
 const styles = StyleSheet.create({
-  screen: {
-    backgroundColor: '#0b0d10',
-    flex: 1,
-  },
-  safeArea: {
-    flex: 1,
-  },
-  layout: {
-    flex: 1,
-    minHeight: 0,
-  },
-  paneSurface: {
-    flex: 1,
-    minHeight: 0,
-  },
-  explorerPane: {
-    backgroundColor: '#0f1115',
-    flex: 1,
-    minHeight: 0,
-  },
-  paneHeader: {
+  screen: { backgroundColor: C.bg, flex: 1 },
+  safeArea: { flex: 1 },
+  pane: { backgroundColor: C.bg, flex: 1, minHeight: 0 },
+  header: {
     alignItems: 'center',
-    borderBottomColor: '#27344b',
-    borderBottomWidth: 1,
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    paddingHorizontal: 14,
-    paddingVertical: 12,
-  },
-  paneHeaderTitle: {
-    color: '#d2dae3',
-    fontFamily: Fonts.sans,
-    fontSize: 11,
-    fontWeight: '600',
-    letterSpacing: 0.6,
-    textTransform: 'uppercase' as const,
-  },
-  paneHeaderActions: {
-    alignItems: 'center',
-    flexDirection: 'row',
-    gap: 6,
-  },
-  createFolderInput: {
-    alignItems: 'center',
-    backgroundColor: '#0f1115',
-    borderBottomColor: '#27344b',
+    backgroundColor: C.surface,
+    borderBottomColor: C.border,
     borderBottomWidth: 1,
     flexDirection: 'row',
     gap: 8,
+    minHeight: 44,
     paddingHorizontal: 14,
-    paddingVertical: 10,
+    paddingVertical: 4,
   },
-  folderInputField: {
-    backgroundColor: '#1a2332',
-    borderColor: '#27344b',
-    borderRadius: 6,
-    borderWidth: 1,
-    color: '#e5e7eb',
+  headerLabel: {
+    color: C.muted,
     flex: 1,
-    fontFamily: Fonts.sans,
-    fontSize: 12,
-    paddingHorizontal: 11,
-    paddingVertical: 8,
-  },
-  folderInputButton: {
-    alignItems: 'center',
-    height: 26,
-    justifyContent: 'center',
-    width: 26,
-    opacity: 0.6,
-  },
-  explorerList: {
-    paddingVertical: 8,
-  },
-  emptyFilesWrap: {
-    alignItems: 'center',
-    paddingHorizontal: 20,
-    paddingVertical: 18,
-  },
-  emptyFilesText: {
-    color: '#98a2b3',
-    fontFamily: Fonts.sans,
-    fontSize: 12,
-    textAlign: 'center',
-  },
-  explorerRow: {
-    backgroundColor: 'transparent',
-    borderRadius: 6,
-    marginHorizontal: 4,
-    marginVertical: 1,
-  },
-  explorerRowActive: {
-    backgroundColor: '#1e2535',
-  },
-  explorerRowInner: {
-    alignItems: 'center',
-    flexDirection: 'row',
-    gap: 7,
-    minHeight: 32,
-    paddingRight: 10,
-  },
-  explorerLeftIcon: {
-    marginRight: 4,
-  },
-  explorerChevron: {
-    marginLeft: 4,
-  },
-  explorerLabel: {
-    color: '#e5e7eb',
-    flex: 1,
-    fontFamily: Fonts.sans,
-    fontSize: 12,
-  },
-  editorPane: {
-    backgroundColor: '#0f1115',
-    flex: 1,
-    minHeight: 0,
-  },
-  editorHeaderShell: {
-    backgroundColor: '#111825',
-    borderBottomColor: '#27344b',
-    borderBottomWidth: 1,
-  },
-  editorHeaderMain: {
-    alignItems: 'center',
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-  },
-  editorHeaderLeft: {
-    alignItems: 'center',
-    flex: 1,
-    flexDirection: 'row',
-    minWidth: 0,
-  },
-  editorHeaderRight: {
-    alignItems: 'center',
-    flexDirection: 'row',
-    gap: 8,
-  },
-  headerIconButton: {
-    alignItems: 'center',
-    borderRadius: 6,
-    height: 26,
-    justifyContent: 'center',
-    width: 26,
-    opacity: 0.7,
-  },
-  headerIconButtonDisabled: {
-    opacity: 0.45,
-  },
-  editorViewport: {
-    flex: 1,
-    minHeight: 0,
-  },
-  editorWebview: {
-    backgroundColor: '#0f1115',
-    flex: 1,
-  },
-  editorWebviewWrap: {
-    flex: 1,
-    minHeight: 0,
-  },
-  editorDock: {
-    alignItems: 'center',
-    backgroundColor: '#111825',
-    borderTopColor: '#27344b',
-    borderTopWidth: 1,
-    flexDirection: 'row',
-    justifyContent: 'space-around',
-    paddingBottom: 10,
-    paddingTop: 8,
-  },
-  editorDockItem: {
-    alignItems: 'center',
-    gap: 4,
-    minWidth: 64,
-  },
-  editorDockItemActive: {
-    opacity: 1,
-  },
-  editorDockLabel: {
-    color: '#8d98aa',
     fontFamily: Fonts.sans,
     fontSize: 10,
-    fontWeight: '600',
+    fontWeight: '500',
+    letterSpacing: 0.8,
   },
-  editorDockLabelActive: {
-    color: '#e5eeff',
-  },
-  loaderWrap: {
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingVertical: 16,
+  headerFile: {
+    color: C.text,
     flex: 1,
+    fontFamily: Fonts.mono,
+    fontSize: 11,
   },
-  emptyState: {
+  headerActions: { alignItems: 'center', flexDirection: 'row', gap: 2 },
+  headerBtn: { alignItems: 'center', borderRadius: 6, height: 36, justifyContent: 'center', width: 36 },
+  headerBtnDisabled: { opacity: 0.3 },
+  folderInputRow: {
     alignItems: 'center',
-    justifyContent: 'center',
-    flex: 1,
-    paddingHorizontal: 24,
+    backgroundColor: C.surface,
+    borderBottomColor: C.border,
+    borderBottomWidth: 1,
+    flexDirection: 'row',
+    gap: 4,
+    paddingHorizontal: 14,
+    paddingVertical: 6,
   },
-  emptyTitle: {
-    color: '#eef2f7',
-    fontFamily: Fonts.sans,
-    fontSize: 14,
-    fontWeight: '600',
-  },
-  emptyText: {
-    color: '#97a1b1',
-    fontFamily: Fonts.sans,
-    fontSize: 12,
-    marginTop: 8,
-    textAlign: 'center',
-  },
-  statusSafeArea: {
-    bottom: 10,
-    left: 12,
-    position: 'absolute',
-    right: 12,
-  },
-  statusCard: {
-    backgroundColor: 'rgba(17, 21, 28, 0.96)',
-    borderColor: '#29303c',
-    borderRadius: 10,
+  folderInput: {
+    backgroundColor: C.surfaceActive,
+    borderColor: C.border,
+    borderRadius: 4,
     borderWidth: 1,
-    paddingHorizontal: 12,
-    paddingVertical: 9,
+    color: C.text,
+    flex: 1,
+    fontFamily: Fonts.mono,
+    fontSize: 11,
+    paddingHorizontal: 8,
+    paddingVertical: 5,
   },
-  statusText: {
-    color: '#c2c9d4',
-    fontFamily: Fonts.sans,
-    fontSize: 12,
-  },
+  fileList: { paddingVertical: 2 },
+  fileRow: { marginHorizontal: 0, marginVertical: 0 },
+  fileRowActive: { backgroundColor: C.selectionBg },
+  fileRowInner: { alignItems: 'center', flexDirection: 'row', gap: 6, minHeight: 36, paddingRight: 12 },
+  fileName: { color: C.text, flex: 1, fontFamily: Fonts.sans, fontSize: 13 },
+  editorWrap: { flex: 1, minHeight: 0 },
+  editorWebview: { backgroundColor: C.bg, flex: 1 },
+  centered: { alignItems: 'center', flex: 1, justifyContent: 'center' },
+  emptyText: { color: C.muted, fontFamily: Fonts.sans, fontSize: 12, textAlign: 'center' },
+  statusBar: { bottom: 0, left: 0, paddingHorizontal: 16, paddingVertical: 6, position: 'absolute', right: 0 },
+  statusText: { color: C.muted, fontFamily: Fonts.sans, fontSize: 11 },
 });

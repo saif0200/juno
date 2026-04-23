@@ -11,12 +11,12 @@ import {
   Pressable,
   ScrollView,
   StyleSheet,
+  Text,
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { WebView, type WebViewMessageEvent } from 'react-native-webview';
 
-import { ThemedText } from '@/components/themed-text';
 import { Fonts } from '@/constants/theme';
 import {
   type ProjectDefinition,
@@ -35,6 +35,20 @@ type RouteParams = {
   projectName?: string | string[];
   sessionId?: string | string[];
   persistence?: string | string[];
+};
+
+const C = {
+  bg: '#181818',
+  surface: '#1d1d1d',
+  surfaceActive: '#2a282a',
+  border: '#383838',
+  borderActive: '#163761',
+  text: '#d6d6dd',
+  muted: '#7a797a',
+  accent: '#228df2',
+  success: '#15ac91',
+  danger: '#f14c4c',
+  warning: '#ea7620',
 };
 
 export default function TerminalTabScreen() {
@@ -63,41 +77,24 @@ export default function TerminalTabScreen() {
 
   useEffect(() => {
     let isMounted = true;
-
     async function loadAssets(): Promise<void> {
       try {
         const html = await loadTerminalHtml();
-        if (!isMounted) {
-          return;
-        }
-
-        setTerminalHtml(html);
+        if (isMounted) setTerminalHtml(html);
       } catch (error) {
-        if (!isMounted) {
-          return;
-        }
-
-        const message = error instanceof Error ? error.message : String(error);
-        setLastError(`Failed to load terminal runtime: ${message}`);
+        if (isMounted) setLastError(`Failed to load terminal: ${error instanceof Error ? error.message : String(error)}`);
       }
     }
-
     void loadAssets();
-
-    return () => {
-      isMounted = false;
-    };
+    return () => { isMounted = false; };
   }, []);
 
   useEffect(() => {
-    return () => {
-      if (blockTimeoutRef.current) clearTimeout(blockTimeoutRef.current);
-    };
+    return () => { if (blockTimeoutRef.current) clearTimeout(blockTimeoutRef.current); };
   }, []);
 
   const escapeForBridge = useCallback(
-    (value: string): string =>
-      JSON.stringify(value).replace(/\u2028/g, '\\u2028').replace(/\u2029/g, '\\u2029'),
+    (value: string): string => JSON.stringify(value).replace(/\u2028/g, '\\u2028').replace(/\u2029/g, '\\u2029'),
     [],
   );
 
@@ -119,89 +116,60 @@ export default function TerminalTabScreen() {
 
   const flushTerminalOutput = useCallback((): void => {
     outputFlushTimeoutRef.current = null;
-    if (!pendingOutputRef.current) {
-      return;
-    }
-
+    if (!pendingOutputRef.current) return;
     const nextChunk = pendingOutputRef.current;
     pendingOutputRef.current = '';
     runInTerminal(`window.__writeTerminal(${escapeForBridge(nextChunk)});`);
   }, [escapeForBridge, runInTerminal]);
 
-  const pushTerminalData = useCallback(
-    (data: string): void => {
-      pendingOutputRef.current += data;
-      if (outputFlushTimeoutRef.current) {
-        return;
-      }
-
-      outputFlushTimeoutRef.current = setTimeout(flushTerminalOutput, 16);
-    },
-    [flushTerminalOutput],
-  );
+  const pushTerminalData = useCallback((data: string): void => {
+    pendingOutputRef.current += data;
+    if (outputFlushTimeoutRef.current) return;
+    outputFlushTimeoutRef.current = setTimeout(flushTerminalOutput, 16);
+  }, [flushTerminalOutput]);
 
   const clearTerminal = useCallback((): void => {
     flushTerminalOutput();
     runInTerminal('window.__clearTerminal();');
   }, [flushTerminalOutput, runInTerminal]);
 
-  const renderFullBuffer = useCallback(
-    (tabId: string | null): void => {
-      if (!tabId) {
-        clearTerminal();
-        runInTerminal("window.__setTerminalBanner('No active tab', 'Tap + to create your first terminal.');");
-        return;
-      }
-
-      const buffer = terminalTabsManager.getTabBuffer(tabId);
+  const renderFullBuffer = useCallback((tabId: string | null): void => {
+    if (!tabId) {
       clearTerminal();
-      if (!buffer) {
-        runInTerminal("window.__setTerminalBanner('Terminal ready', 'Waiting for process output...');");
-        return;
-      }
-
-      runInTerminal(`window.__writeTerminal(${escapeForBridge(buffer)});`);
-    },
-    [clearTerminal, escapeForBridge, runInTerminal],
-  );
+      runInTerminal("window.__setTerminalBanner('No active tab', 'Tap + to create your first terminal.');");
+      return;
+    }
+    const buffer = terminalTabsManager.getTabBuffer(tabId);
+    clearTerminal();
+    if (!buffer) {
+      runInTerminal("window.__setTerminalBanner('Terminal ready', 'Waiting for process output...');");
+      return;
+    }
+    runInTerminal(`window.__writeTerminal(${escapeForBridge(buffer)});`);
+  }, [clearTerminal, escapeForBridge, runInTerminal]);
 
   useEffect(() => {
     const unsubscribe = terminalTabsManager.subscribe((event) => {
       if (event.type === 'tabs_changed') {
         setSnapshot(event.snapshot);
-
         const currentActive = event.snapshot.tabs.find((tab) => tab.id === event.snapshot.activeTabId) ?? null;
         setLastError(currentActive?.lastError ?? null);
         return;
       }
-
-      if (!isTerminalReady) {
-        return;
-      }
-
-      if (event.type === 'active_output') {
-        pushTerminalData(event.data);
-        return;
-      }
-
+      if (!isTerminalReady) return;
+      if (event.type === 'active_output') { pushTerminalData(event.data); return; }
       flushTerminalOutput();
       clearTerminal();
       runInTerminal(`window.__writeTerminal(${escapeForBridge(event.data)});`);
     });
-
     return () => {
       unsubscribe();
-      if (outputFlushTimeoutRef.current) {
-        clearTimeout(outputFlushTimeoutRef.current);
-      }
+      if (outputFlushTimeoutRef.current) clearTimeout(outputFlushTimeoutRef.current);
     };
   }, [clearTerminal, escapeForBridge, flushTerminalOutput, isTerminalReady, pushTerminalData, runInTerminal]);
 
   useEffect(() => {
-    if (!isTerminalReady || !terminalHtml) {
-      return;
-    }
-
+    if (!isTerminalReady || !terminalHtml) return;
     renderFullBuffer(snapshot.activeTabId);
   }, [isTerminalReady, renderFullBuffer, snapshot.activeTabId, terminalHtml]);
 
@@ -214,77 +182,38 @@ export default function TerminalTabScreen() {
   const persistence = normalizePersistence(firstParam(params.persistence));
 
   useEffect(() => {
-    if (!requestId || consumedRequestIdRef.current === requestId) {
-      return;
-    }
-
+    if (!requestId || consumedRequestIdRef.current === requestId) return;
     consumedRequestIdRef.current = requestId;
-
     if (action === 'open_project' && url && projectId && projectName) {
-      const result = terminalTabsManager.openProjectTab({
-        projectId,
-        projectName,
-        connectionUrl: url,
-        persistence,
-      });
+      const result = terminalTabsManager.openProjectTab({ projectId, projectName, connectionUrl: url, persistence });
       setStatusMessage(result.error);
       return;
     }
-
     if (action === 'open_existing' && url && sessionId && projectId && projectName) {
-      const result = terminalTabsManager.openExistingSession({
-        relaySessionId: sessionId,
-        projectId,
-        projectName,
-        connectionUrl: url,
-        persistence: persistence ?? 'persisted',
-      });
+      const result = terminalTabsManager.openExistingSession({ relaySessionId: sessionId, projectId, projectName, connectionUrl: url, persistence: persistence ?? 'persisted' });
       setStatusMessage(result.error);
     }
   }, [action, persistence, projectId, projectName, requestId, sessionId, url]);
 
   function handleTerminalBridgeMessage(event: WebViewMessageEvent): void {
     const message = JSON.parse(event.nativeEvent.data) as TerminalBridgeMessage;
-
     if (message.type === 'terminal_ready') {
       setIsTerminalReady(true);
-      if (!snapshot.activeTabId) {
-        runInTerminal("window.__setTerminalBanner('Claude Terminal', 'Open a tab to start.');");
-      }
+      if (!snapshot.activeTabId) runInTerminal("window.__setTerminalBanner('Claude Terminal', 'Open a tab to start.');");
       return;
     }
-
-    if (message.type === 'terminal_runtime_error') {
-      setLastError(`WebView terminal error: ${message.message}`);
-      return;
-    }
-
-    if (!snapshot.activeTabId) {
-      return;
-    }
-
-    if (message.type === 'terminal_input') {
-      terminalTabsManager.sendInputToActive(message.data);
-      return;
-    }
-
+    if (message.type === 'terminal_runtime_error') { setLastError(`Runtime error: ${message.message}`); return; }
+    if (!snapshot.activeTabId) return;
+    if (message.type === 'terminal_input') { terminalTabsManager.sendInputToActive(message.data); return; }
     terminalTabsManager.resizeActive(message.cols, message.rows);
   }
 
   async function openProjectChooser(): Promise<void> {
     const connectionUrl = activeTab?.connectionUrl;
-    if (!connectionUrl) {
-      setStatusMessage('Open a tab first to load projects from a relay.');
-      return;
-    }
-
+    if (!connectionUrl) { setStatusMessage('Open a tab first.'); return; }
     setShowProjectSheet(true);
-
     const cached = terminalTabsManager.getKnownProjects(connectionUrl);
-    if (cached.length > 0) {
-      setAvailableProjects(cached);
-    }
-
+    if (cached.length > 0) setAvailableProjects(cached);
     setProjectsLoading(true);
     const result = await terminalTabsManager.fetchProjectsForConnection(connectionUrl);
     setProjectsLoading(false);
@@ -294,84 +223,54 @@ export default function TerminalTabScreen() {
 
   function createQuickTab(): void {
     const result = terminalTabsManager.createTabLikeActive();
-    if (result.error) {
-      setStatusMessage(result.error);
-      return;
-    }
-
-    setStatusMessage(null);
+    if (result.error) setStatusMessage(result.error);
+    else setStatusMessage(null);
   }
 
   function createTabFromProject(project: ProjectDefinition): void {
     const connectionUrl = activeTab?.connectionUrl;
-    if (!connectionUrl) {
-      setStatusMessage('Unable to resolve relay connection for selected project.');
-      return;
-    }
-
-    const result = terminalTabsManager.openProjectTab({
-      projectId: project.id,
-      projectName: project.name,
-      connectionUrl,
-      persistence: 'ephemeral',
-    });
-
-    if (result.error) {
-      setStatusMessage(result.error);
-      return;
-    }
-
+    if (!connectionUrl) { setStatusMessage('Unable to resolve relay connection.'); return; }
+    const result = terminalTabsManager.openProjectTab({ projectId: project.id, projectName: project.name, connectionUrl, persistence: 'persisted' });
+    if (result.error) { setStatusMessage(result.error); return; }
     setShowProjectSheet(false);
     setStatusMessage(null);
   }
 
-  function closeTab(tabId: string): void {
-    terminalTabsManager.closeTab(tabId);
-  }
-
-  function activateTab(tabId: string): void {
-    terminalTabsManager.activateTab(tabId);
-    setShowTabSheet(false);
-  }
-
   const compactStatus = useMemo(() => {
-    if (statusMessage) {
-      return statusMessage;
-    }
-
-    if (lastError) {
-      return lastError;
-    }
-
-    if (!activeTab) {
-      return 'Tap + to create a terminal';
-    }
-
-    if (activeTab.status === 'live') {
-      return null;
-    }
-
-    if (activeTab.status === 'exited') {
-      return activeTab.exitState?.message ?? 'Process exited';
-    }
-
+    if (statusMessage) return statusMessage;
+    if (lastError) return lastError;
+    if (!activeTab) return 'Tap + to open a terminal';
+    if (activeTab.status === 'live') return null;
+    if (activeTab.status === 'exited') return activeTab.exitState?.message ?? 'Process exited';
     return `${activeTab.status} · ${activeTab.projectName}`;
   }, [activeTab, lastError, statusMessage]);
+
+  const statusColor = lastError ? C.danger : statusMessage ? C.warning : C.muted;
 
   return (
     <View onTouchStart={dismissSoftKeyboard} style={styles.screen}>
       <StatusBar style="light" />
-      <View pointerEvents="none" style={styles.brandGlowTop} />
-
       <SafeAreaView edges={['top', 'left', 'right']} style={styles.topSafeArea}>
-        <View style={styles.topCard}>
-          <View style={styles.topMeta} />
-          <View style={styles.topBarActions}>
-            <Pressable onPress={() => setShowTabSheet(true)} style={styles.iconButton}>
-              <MaterialIcons color="#e5eeff" name="layers" size={18} />
+        <View style={styles.topBar}>
+          <View style={styles.topBarLeft}>
+            {activeTab ? (
+              <>
+                <View style={[styles.tabDot, { backgroundColor: activeTab.status === 'live' ? C.success : C.muted }]} />
+                <Text style={styles.topBarTitle} numberOfLines={1}>{activeTab.projectName}</Text>
+                {snapshot.tabs.length > 1 ? (
+                  <Text style={styles.topBarCount}>{snapshot.tabs.length}</Text>
+                ) : null}
+              </>
+            ) : (
+              <Text style={styles.topBarTitle}>terminal</Text>
+            )}
+          </View>
+          <View style={styles.topBarRight}>
+            <Pressable onPress={() => setShowTabSheet(true)} style={styles.iconBtn}>
+              <MaterialIcons color={C.muted} name="layers" size={18} />
             </Pressable>
-            <Pressable onLongPress={() => void openProjectChooser()} onPress={createQuickTab} style={styles.iconButton}>
-              <MaterialIcons color="#e5eeff" name="add" size={18} />
+            <Pressable onLongPress={() => void openProjectChooser()} onPress={createQuickTab} style={styles.iconBtn}>
+              <MaterialIcons color={C.accent} name="add" size={18} />
             </Pressable>
           </View>
         </View>
@@ -390,10 +289,7 @@ export default function TerminalTabScreen() {
               hideKeyboardAccessoryView
               javaScriptEnabled
               keyboardDisplayRequiresUserAction
-              onError={(event) => {
-                const message = event.nativeEvent.description || 'Unknown WebView error';
-                setLastError(`WebView failed to load: ${message}`);
-              }}
+              onError={(e) => setLastError(`WebView error: ${e.nativeEvent.description}`)}
               onMessage={handleTerminalBridgeMessage}
               originWhitelist={['*']}
               scrollEnabled={false}
@@ -402,37 +298,41 @@ export default function TerminalTabScreen() {
             />
           ) : (
             <View style={styles.loadingState}>
-              <ThemedText style={styles.loadingText}>Loading terminal runtime…</ThemedText>
+              <ActivityIndicator color={C.muted} size="small" />
+              <Text style={styles.loadingText}>Loading terminal…</Text>
             </View>
           )}
         </View>
       </KeyboardAvoidingView>
 
       {compactStatus ? (
-        <SafeAreaView edges={['bottom']} pointerEvents="none" style={styles.statusSafeArea}>
-          <View style={styles.statusCard}>
-            <ThemedText style={styles.statusText}>{compactStatus}</ThemedText>
-          </View>
+        <SafeAreaView edges={['bottom']} pointerEvents="none" style={styles.statusBar}>
+          <Text style={[styles.statusText, { color: statusColor }]} numberOfLines={1}>{compactStatus}</Text>
         </SafeAreaView>
       ) : null}
 
+      {/* Tab sheet */}
       <Modal animationType="slide" transparent visible={showTabSheet} onRequestClose={() => setShowTabSheet(false)}>
-        <Pressable style={styles.sheetBackdrop} onPress={() => setShowTabSheet(false)}>
-          <View style={styles.sheetCard}>
-            <ThemedText style={styles.sheetTitle}>Terminals</ThemedText>
-            <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.sheetList}>
-              {snapshot.tabs.map((tab) => {
+        <Pressable style={styles.backdrop} onPress={() => setShowTabSheet(false)}>
+          <View style={styles.sheet}>
+            <View style={styles.sheetHandle} />
+            <Text style={styles.sheetTitle}>Terminals</Text>
+            <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.sheetContent}>
+              {snapshot.tabs.length === 0 ? (
+                <Text style={styles.sheetEmpty}>No open terminals.</Text>
+              ) : snapshot.tabs.map((tab) => {
                 const isActive = tab.id === snapshot.activeTabId;
                 return (
-                  <View key={tab.id} style={[styles.sheetRow, isActive ? styles.sheetRowActive : null]}>
-                    <Pressable onPress={() => activateTab(tab.id)} style={styles.sheetRowMain}>
-                      <ThemedText numberOfLines={1} style={styles.sheetRowTitle}>
-                        {tab.projectName}
-                      </ThemedText>
-                      <ThemedText style={styles.sheetRowMeta}>{tab.status}</ThemedText>
+                  <View key={tab.id} style={[styles.sheetRow, isActive && styles.sheetRowActive]}>
+                    <Pressable onPress={() => { terminalTabsManager.activateTab(tab.id); setShowTabSheet(false); }} style={styles.sheetRowMain}>
+                      <View style={styles.sheetRowTop}>
+                        <View style={[styles.tabDot, { backgroundColor: tab.status === 'live' ? C.success : C.muted }]} />
+                        <Text style={styles.sheetRowName} numberOfLines={1}>{tab.projectName}</Text>
+                      </View>
+                      <Text style={styles.sheetRowMeta}>{tab.status}</Text>
                     </Pressable>
-                    <Pressable onPress={() => closeTab(tab.id)} style={styles.sheetCloseButton}>
-                      <ThemedText style={styles.sheetCloseText}>Close</ThemedText>
+                    <Pressable onPress={() => terminalTabsManager.closeTab(tab.id)} style={styles.sheetCloseBtn}>
+                      <MaterialIcons color={C.muted} name="close" size={14} />
                     </Pressable>
                   </View>
                 );
@@ -442,20 +342,18 @@ export default function TerminalTabScreen() {
         </Pressable>
       </Modal>
 
+      {/* Project sheet */}
       <Modal animationType="slide" transparent visible={showProjectSheet} onRequestClose={() => setShowProjectSheet(false)}>
-        <Pressable style={styles.sheetBackdrop} onPress={() => setShowProjectSheet(false)}>
-          <View style={styles.sheetCard}>
-            <ThemedText style={styles.sheetTitle}>Open Project In New Tab</ThemedText>
-            {projectsLoading ? (
-              <View style={styles.loadingProjects}>
-                <ActivityIndicator color="#93c5fd" />
-              </View>
-            ) : null}
-            <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.sheetList}>
+        <Pressable style={styles.backdrop} onPress={() => setShowProjectSheet(false)}>
+          <View style={styles.sheet}>
+            <View style={styles.sheetHandle} />
+            <Text style={styles.sheetTitle}>Open project</Text>
+            {projectsLoading ? <ActivityIndicator color={C.muted} style={{ marginBottom: 12 }} /> : null}
+            <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.sheetContent}>
               {availableProjects.map((project) => (
-                <Pressable key={project.id} onPress={() => createTabFromProject(project)} style={styles.projectRow}>
-                  <ThemedText style={styles.projectRowTitle}>{project.name}</ThemedText>
-                  <ThemedText style={styles.projectRowMeta}>{project.path}</ThemedText>
+                <Pressable key={project.id} onPress={() => createTabFromProject(project)} style={styles.sheetRow}>
+                  <Text style={styles.sheetRowName}>{project.name}</Text>
+                  <Text style={styles.sheetRowMeta} numberOfLines={1}>{project.path}</Text>
                 </Pressable>
               ))}
             </ScrollView>
@@ -471,205 +369,72 @@ function firstParam(value?: string | string[]): string | undefined {
 }
 
 function normalizePersistence(value?: string): TerminalPersistenceMode | undefined {
-  if (value === 'persisted') {
-    return 'persisted';
-  }
-
-  if (value === 'ephemeral') {
-    return 'ephemeral';
-  }
-
+  if (value === 'persisted') return 'persisted';
+  if (value === 'ephemeral') return 'ephemeral';
   return undefined;
 }
 
 const styles = StyleSheet.create({
-  screen: {
-    backgroundColor: '#0b0d10',
-    flex: 1,
-  },
-  brandGlowTop: {
-    backgroundColor: 'rgba(45, 212, 191, 0.08)',
-    borderRadius: 220,
-    height: 220,
-    position: 'absolute',
-    right: -90,
-    top: -110,
-    width: 220,
-  },
-  flex1: {
-    flex: 1,
-    minHeight: 0,
-  },
-  webviewShell: {
-    flex: 1,
-    minHeight: 0,
-    overflow: 'hidden',
-  },
-  webview: {
-    backgroundColor: '#0f1115',
-    flex: 1,
-  },
-  loadingState: {
+  screen: { backgroundColor: C.bg, flex: 1 },
+  topSafeArea: { backgroundColor: C.surface, borderBottomColor: C.border, borderBottomWidth: 1 },
+  topBar: {
     alignItems: 'center',
-    backgroundColor: '#0f1115',
-    flex: 1,
-    justifyContent: 'center',
-    paddingHorizontal: 24,
-  },
-  loadingText: {
-    color: '#aab2bf',
-    fontFamily: Fonts.mono,
-    fontSize: 13,
-  },
-  topSafeArea: {
-    backgroundColor: 'transparent',
-  },
-  topCard: {
-    alignItems: 'flex-start',
-    backgroundColor: '#10141d',
-    borderBottomColor: '#1f2634',
-    borderBottomWidth: 1,
     flexDirection: 'row',
-    gap: 8,
     justifyContent: 'space-between',
-    paddingBottom: 11,
-    paddingHorizontal: 12,
-    paddingTop: 8,
-  },
-  topMeta: {
-    flex: 1,
-    minWidth: 0,
-  },
-  topBarActions: {
-    alignItems: 'center',
-    flexDirection: 'row',
-    gap: 6,
-  },
-  iconButton: {
-    alignItems: 'center',
-    backgroundColor: '#1a2230',
-    borderColor: '#31405a',
-    borderRadius: 10,
-    borderWidth: 1,
-    height: 32,
-    justifyContent: 'center',
-    minWidth: 58,
-    paddingHorizontal: 12,
-  },
-  statusSafeArea: {
-    bottom: 10,
-    left: 12,
-    position: 'absolute',
-    right: 12,
-  },
-  statusCard: {
-    backgroundColor: 'rgba(17, 21, 28, 0.96)',
-    borderColor: '#29303c',
-    borderRadius: 10,
-    borderWidth: 1,
-    paddingHorizontal: 12,
-    paddingVertical: 9,
-  },
-  statusText: {
-    color: '#c2c9d4',
-    fontFamily: Fonts.sans,
-    fontSize: 12,
-  },
-  sheetBackdrop: {
-    backgroundColor: 'rgba(6, 8, 10, 0.65)',
-    flex: 1,
-    justifyContent: 'flex-end',
-    padding: 10,
-  },
-  sheetCard: {
-    backgroundColor: '#0f141d',
-    borderColor: '#273145',
-    borderRadius: 14,
-    borderWidth: 1,
-    maxHeight: '78%',
+    minHeight: 44,
     paddingHorizontal: 14,
-    paddingTop: 14,
+    paddingVertical: 4,
   },
-  sheetTitle: {
-    color: '#eef2f7',
+  topBarLeft: { alignItems: 'center', flex: 1, flexDirection: 'row', gap: 8, minWidth: 0 },
+  tabDot: { borderRadius: 99, flexShrink: 0, height: 6, width: 6 },
+  topBarTitle: { color: '#d1d1d1', flex: 1, fontFamily: Fonts.sans, fontSize: 12, fontWeight: '400' },
+  topBarCount: {
+    backgroundColor: C.surfaceActive,
+    borderRadius: 3,
+    color: C.muted,
     fontFamily: Fonts.sans,
-    fontSize: 14,
-    fontWeight: '600',
-    marginBottom: 10,
+    fontSize: 10,
+    paddingHorizontal: 5,
+    paddingVertical: 1,
   },
-  sheetList: {
-    paddingBottom: 20,
+  topBarRight: { alignItems: 'center', flexDirection: 'row', gap: 4 },
+  iconBtn: { alignItems: 'center', borderRadius: 6, height: 36, justifyContent: 'center', width: 36 },
+  flex1: { flex: 1, minHeight: 0 },
+  webviewShell: { flex: 1, minHeight: 0, overflow: 'hidden' },
+  webview: { backgroundColor: C.bg, flex: 1 },
+  loadingState: { alignItems: 'center', backgroundColor: C.bg, flex: 1, flexDirection: 'row', gap: 10, justifyContent: 'center' },
+  loadingText: { color: C.muted, fontFamily: Fonts.sans, fontSize: 12 },
+  statusBar: { bottom: 0, left: 0, paddingHorizontal: 16, paddingVertical: 6, position: 'absolute', right: 0 },
+  statusText: { fontFamily: Fonts.sans, fontSize: 11 },
+  backdrop: { backgroundColor: 'rgba(0,0,0,0.6)', flex: 1, justifyContent: 'flex-end' },
+  sheet: {
+    backgroundColor: C.surface,
+    borderTopColor: C.border,
+    borderTopLeftRadius: 12,
+    borderTopRightRadius: 12,
+    borderTopWidth: 1,
+    maxHeight: '80%',
+    paddingBottom: 8,
+    paddingHorizontal: 16,
+    paddingTop: 12,
   },
+  sheetHandle: { alignSelf: 'center', backgroundColor: C.border, borderRadius: 99, height: 4, marginBottom: 14, width: 36 },
+  sheetTitle: { color: C.text, fontFamily: Fonts.sans, fontSize: 10, fontWeight: '500', letterSpacing: 0.8, marginBottom: 12, textTransform: 'uppercase' },
+  sheetContent: { gap: 1, paddingBottom: 40 },
+  sheetEmpty: { color: C.muted, fontFamily: Fonts.sans, fontSize: 12, paddingVertical: 8 },
   sheetRow: {
-    alignItems: 'center',
-    backgroundColor: '#141c2a',
-    borderColor: '#2d3a50',
-    borderRadius: 10,
-    borderWidth: 1,
-    flexDirection: 'row',
-    marginBottom: 8,
-    paddingHorizontal: 10,
-    paddingVertical: 10,
+    backgroundColor: C.surface,
+    borderBottomColor: C.border,
+    borderBottomWidth: 1,
+    gap: 4,
+    marginBottom: -1,
+    paddingHorizontal: 12,
+    paddingVertical: 12,
   },
-  sheetRowActive: {
-    borderColor: '#38bdf8',
-    backgroundColor: '#182436',
-  },
-  sheetRowMain: {
-    flex: 1,
-    minWidth: 0,
-  },
-  sheetRowTitle: {
-    color: '#eef2f7',
-    fontFamily: Fonts.sans,
-    fontSize: 13,
-    fontWeight: '600',
-  },
-  sheetRowMeta: {
-    color: '#98a2b3',
-    fontFamily: Fonts.sans,
-    fontSize: 11,
-    marginTop: 2,
-    textTransform: 'capitalize',
-  },
-  sheetCloseButton: {
-    backgroundColor: '#1c2533',
-    borderColor: '#32435e',
-    borderRadius: 8,
-    borderWidth: 1,
-    paddingHorizontal: 10,
-    paddingVertical: 7,
-  },
-  sheetCloseText: {
-    color: '#e2e8f0',
-    fontFamily: Fonts.sans,
-    fontSize: 11,
-    fontWeight: '600',
-  },
-  loadingProjects: {
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingVertical: 10,
-  },
-  projectRow: {
-    backgroundColor: '#141c2a',
-    borderColor: '#2d3a50',
-    borderRadius: 10,
-    borderWidth: 1,
-    marginBottom: 8,
-    paddingHorizontal: 10,
-    paddingVertical: 10,
-  },
-  projectRowTitle: {
-    color: '#eef2f7',
-    fontFamily: Fonts.sans,
-    fontSize: 13,
-    fontWeight: '600',
-  },
-  projectRowMeta: {
-    color: '#97a1b1',
-    fontFamily: Fonts.mono,
-    fontSize: 11,
-    marginTop: 3,
-  },
+  sheetRowActive: { backgroundColor: C.surfaceActive },
+  sheetRowMain: { flex: 1, gap: 3 },
+  sheetRowTop: { alignItems: 'center', flexDirection: 'row', gap: 8 },
+  sheetRowName: { color: '#d1d1d1', flex: 1, fontFamily: Fonts.sans, fontSize: 13, fontWeight: '400' },
+  sheetRowMeta: { color: C.muted, fontFamily: Fonts.sans, fontSize: 11 },
+  sheetCloseBtn: { alignItems: 'center', height: 36, justifyContent: 'center', width: 36 },
 });

@@ -1,45 +1,47 @@
 import { CameraView, useCameraPermissions } from 'expo-camera';
 import { router } from 'expo-router';
 import { useState } from 'react';
-import { Pressable, StyleSheet, View } from 'react-native';
+import { Pressable, StyleSheet, Text, useWindowDimensions, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
-import { ThemedText } from '@/components/themed-text';
-import { Colors, Fonts } from '@/constants/theme';
-import { useColorScheme } from '@/hooks/use-color-scheme';
+import { Fonts } from '@/constants/theme';
 import { setPendingDeviceId, upsertSavedDevice } from '@/lib/devices';
 import { parsePairingScan } from '@/lib/pairing';
 
+const C = {
+  bg: '#181818',
+  surface: '#1d1d1d',
+  border: '#383838',
+  text: '#d6d6dd',
+  muted: '#7a797a',
+  accent: '#228df2',
+  danger: '#f14c4c',
+};
+
 export default function PairDeviceScreen() {
-  const colorScheme = useColorScheme() ?? 'dark';
-  const palette = Colors[colorScheme];
+  const { width } = useWindowDimensions();
   const [permission, requestPermission] = useCameraPermissions();
   const [isHandlingScan, setIsHandlingScan] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
   async function handleBarcodeScan(data: string): Promise<void> {
-    if (isHandlingScan) {
-      return;
-    }
-
+    if (isHandlingScan) return;
     setIsHandlingScan(true);
     setErrorMessage(null);
-
     try {
-      const pairingPayload = await parsePairingScan(data);
-      const savedDevice = await upsertSavedDevice({
-        name: pairingPayload.name,
-        wsUrl: pairingPayload.wsUrl,
-        httpUrl: pairingPayload.httpUrl,
-        token: pairingPayload.token,
-        capabilities: pairingPayload.capabilities,
+      const payload = await parsePairingScan(data);
+      const device = await upsertSavedDevice({
+        name: payload.name,
+        wsUrl: payload.wsUrl,
+        httpUrl: payload.httpUrl,
+        token: payload.token,
+        capabilities: payload.capabilities,
         source: 'qr',
       });
-
-      await setPendingDeviceId(savedDevice.id);
+      await setPendingDeviceId(device.id);
       router.back();
     } catch (error) {
-      setErrorMessage(error instanceof Error ? error.message : 'Could not parse the scanned QR code.');
+      setErrorMessage(error instanceof Error ? error.message : 'Could not parse QR code.');
       setIsHandlingScan(false);
     }
   }
@@ -47,33 +49,31 @@ export default function PairDeviceScreen() {
   const scannerEnabled = Boolean(permission?.granted) && !isHandlingScan;
 
   return (
-    <SafeAreaView style={[styles.safeArea, { backgroundColor: palette.background }]}>
-      <View style={styles.container}>
-        <View style={styles.copyBlock}>
-          <ThemedText style={[styles.eyebrow, { color: palette.muted }]}>Pair Device</ThemedText>
-          <ThemedText type="title" style={styles.title}>
-            Scan a relay QR and return to work.
-          </ThemedText>
-          <ThemedText style={[styles.description, { color: palette.muted }]}>
-            Pairing stores the relay on this phone and brings you back with that device selected.
-          </ThemedText>
-        </View>
+    <SafeAreaView style={styles.root}>
+      {/* Header */}
+      <View style={styles.header}>
+        <Pressable onPress={() => router.back()} style={styles.backBtn}>
+          <Text style={styles.backText}>← back</Text>
+        </Pressable>
+        <Text style={styles.headerTitle}>pair device</Text>
+        <View style={{ width: 60 }} />
+      </View>
 
+      <View style={styles.body}>
+        {/* Camera */}
         {!permission ? (
-          <StateCard palette={palette} title="Checking camera permission…" />
-        ) : null}
-
-        {permission && !permission.granted ? (
-          <View style={[styles.stateCard, { backgroundColor: palette.surface, borderColor: palette.border }]}>
-            <ThemedText style={styles.stateTitle}>Camera access is required to scan pairing QR codes.</ThemedText>
-            <Pressable onPress={() => void requestPermission()} style={[styles.primaryButton, { backgroundColor: palette.text }]}>
-              <ThemedText style={[styles.primaryButtonText, { color: palette.background }]}>Allow camera</ThemedText>
+          <View style={styles.cameraShell}>
+            <Text style={styles.mutedText}>Checking camera…</Text>
+          </View>
+        ) : !permission.granted ? (
+          <View style={[styles.cameraShell, styles.permissionCard]}>
+            <Text style={styles.permissionText}>Camera access required to scan QR codes.</Text>
+            <Pressable onPress={() => void requestPermission()} style={styles.allowBtn}>
+              <Text style={styles.allowBtnText}>Allow camera</Text>
             </Pressable>
           </View>
-        ) : null}
-
-        {permission?.granted ? (
-          <View style={[styles.scannerShell, { borderColor: palette.border }]}>
+        ) : (
+          <View style={styles.cameraShell}>
             <CameraView
               barcodeScannerSettings={{ barcodeTypes: ['qr'] }}
               facing="back"
@@ -81,157 +81,103 @@ export default function PairDeviceScreen() {
               style={styles.camera}
             />
             <View pointerEvents="none" style={styles.overlay}>
-              <View style={styles.scanMask}>
-                <View style={styles.scanFrame} />
-              </View>
+              <View style={[styles.scanFrame, { width: width * 0.6, height: width * 0.6 }]} />
             </View>
           </View>
-        ) : null}
+        )}
 
+        {/* Footer */}
         <View style={styles.footer}>
-          <ThemedText style={[styles.footerText, { color: palette.muted }]}>Expected payload includes a relay `wsUrl` and optional metadata.</ThemedText>
+          <Text style={styles.footerHint}>
+            Scan the QR code shown by <Text style={{ color: C.text }}>npm run dev</Text> in the relay server.
+          </Text>
+
           {errorMessage ? (
-            <ThemedText style={[styles.errorText, { color: palette.danger }]}>{errorMessage}</ThemedText>
+            <View style={styles.errorRow}>
+              <Text style={styles.errorText}>{errorMessage}</Text>
+            </View>
           ) : null}
+
+          {isHandlingScan ? (
+            <Text style={[styles.footerHint, { color: C.accent }]}>Connecting…</Text>
+          ) : null}
+
           {permission?.granted && !scannerEnabled ? (
-            <Pressable
-              onPress={() => {
-                setErrorMessage(null);
-                setIsHandlingScan(false);
-              }}
-              style={[styles.secondaryButton, { backgroundColor: palette.surfaceMuted, borderColor: palette.border }]}>
-              <ThemedText style={[styles.secondaryButtonText, { color: palette.text }]}>Scan another code</ThemedText>
+            <Pressable onPress={() => { setErrorMessage(null); setIsHandlingScan(false); }} style={styles.retryBtn}>
+              <Text style={styles.retryText}>Scan again</Text>
             </Pressable>
           ) : null}
-          <Pressable
-            onPress={() => router.back()}
-            style={[styles.secondaryButton, { backgroundColor: palette.surfaceMuted, borderColor: palette.border }]}>
-            <ThemedText style={[styles.secondaryButtonText, { color: palette.text }]}>Back to workspace</ThemedText>
-          </Pressable>
         </View>
       </View>
     </SafeAreaView>
   );
 }
 
-function StateCard({
-  palette,
-  title,
-}: {
-  palette: (typeof Colors)['light'];
-  title: string;
-}) {
-  return (
-    <View style={[styles.stateCard, { backgroundColor: palette.surface, borderColor: palette.border }]}>
-      <ThemedText style={styles.stateTitle}>{title}</ThemedText>
-    </View>
-  );
-}
-
 const styles = StyleSheet.create({
-  safeArea: {
-    flex: 1,
-  },
-  container: {
-    flex: 1,
-    gap: 22,
-    paddingHorizontal: 20,
-    paddingVertical: 18,
-  },
-  copyBlock: {
-    gap: 10,
-  },
-  eyebrow: {
-    fontFamily: Fonts.mono,
-    fontSize: 11,
-    letterSpacing: 1,
-    textTransform: 'uppercase',
-  },
-  title: {
-    fontFamily: Fonts.rounded,
-    fontSize: 32,
-    lineHeight: 36,
-    maxWidth: 320,
-  },
-  description: {
-    fontSize: 15,
-    lineHeight: 24,
-    maxWidth: 340,
-  },
-  stateCard: {
+  root: { backgroundColor: C.bg, flex: 1 },
+  header: {
     alignItems: 'center',
-    borderRadius: 28,
-    borderWidth: 1,
-    gap: 14,
-    padding: 22,
+    borderBottomColor: C.border,
+    borderBottomWidth: 1,
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    minHeight: 44,
+    paddingHorizontal: 16,
+    paddingVertical: 8,
   },
-  stateTitle: {
-    fontFamily: Fonts.rounded,
-    fontSize: 20,
-    lineHeight: 26,
-    textAlign: 'center',
-  },
-  scannerShell: {
-    borderRadius: 32,
+  backBtn: { minHeight: 44, justifyContent: 'center', paddingVertical: 4, width: 60 },
+  backText: { color: C.accent, fontFamily: Fonts.sans, fontSize: 12 },
+  headerTitle: { color: C.muted, fontFamily: Fonts.sans, fontSize: 10, fontWeight: '500', letterSpacing: 0.8 },
+  body: { flex: 1, gap: 16, padding: 16 },
+  cameraShell: {
+    backgroundColor: C.surface,
+    borderColor: C.border,
+    borderRadius: 8,
     borderWidth: 1,
     flex: 1,
-    minHeight: 340,
     overflow: 'hidden',
-  },
-  camera: {
-    flex: 1,
-  },
-  overlay: {
-    ...StyleSheet.absoluteFillObject,
-  },
-  scanMask: {
-    ...StyleSheet.absoluteFillObject,
     alignItems: 'center',
-    backgroundColor: 'rgba(9, 9, 11, 0.18)',
     justifyContent: 'center',
   },
+  permissionCard: { gap: 16, padding: 24 },
+  permissionText: { color: C.muted, fontFamily: Fonts.sans, fontSize: 12, lineHeight: 18, textAlign: 'center' },
+  allowBtn: {
+    backgroundColor: C.accent,
+    borderRadius: 6,
+    minHeight: 44,
+    justifyContent: 'center',
+    paddingHorizontal: 20,
+    paddingVertical: 10,
+  },
+  allowBtnText: { color: '#181818', fontFamily: Fonts.sans, fontSize: 12, fontWeight: '500' },
+  camera: { ...StyleSheet.absoluteFillObject },
+  overlay: { ...StyleSheet.absoluteFillObject, alignItems: 'center', justifyContent: 'center' },
   scanFrame: {
-    borderColor: 'rgba(255,255,255,0.92)',
-    borderRadius: 30,
-    borderWidth: 3,
-    height: 230,
-    width: 230,
+    borderColor: '#d6d6dd',
+    borderRadius: 12,
+    borderWidth: 2,
   },
-  footer: {
-    gap: 12,
-  },
-  footerText: {
-    fontFamily: Fonts.mono,
-    fontSize: 12,
-    lineHeight: 18,
-  },
-  errorText: {
-    fontFamily: Fonts.mono,
-    fontSize: 12,
-    lineHeight: 18,
-  },
-  primaryButton: {
-    alignItems: 'center',
-    borderRadius: 18,
-    paddingHorizontal: 18,
-    paddingVertical: 16,
-    width: '100%',
-  },
-  primaryButtonText: {
-    fontFamily: Fonts.rounded,
-    fontSize: 16,
-    fontWeight: '700',
-  },
-  secondaryButton: {
-    alignItems: 'center',
-    borderRadius: 18,
+  mutedText: { color: C.muted, fontFamily: Fonts.sans, fontSize: 12 },
+  footer: { gap: 10, paddingBottom: 8 },
+  footerHint: { color: C.muted, fontFamily: Fonts.sans, fontSize: 12, lineHeight: 18 },
+  errorRow: {
+    backgroundColor: 'rgba(241,76,76,0.08)',
+    borderColor: 'rgba(241,76,76,0.25)',
+    borderRadius: 4,
     borderWidth: 1,
-    paddingHorizontal: 18,
-    paddingVertical: 15,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
   },
-  secondaryButtonText: {
-    fontFamily: Fonts.mono,
-    fontSize: 13,
-    fontWeight: '700',
+  errorText: { color: C.danger, fontFamily: Fonts.sans, fontSize: 12 },
+  retryBtn: {
+    alignItems: 'center',
+    backgroundColor: C.surface,
+    borderColor: C.border,
+    borderRadius: 6,
+    borderWidth: 1,
+    minHeight: 44,
+    justifyContent: 'center',
+    paddingVertical: 10,
   },
+  retryText: { color: C.text, fontFamily: Fonts.sans, fontSize: 12, fontWeight: '500' },
 });
