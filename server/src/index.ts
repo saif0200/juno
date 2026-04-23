@@ -35,6 +35,7 @@ import type {
     SessionPromotedMessage,
     SessionResumedMessage,
     SessionSummary,
+    TerminalBackend,
     TerminalPersistenceMode,
     TerminalInputMessage,
     TerminalResizeMessage,
@@ -56,6 +57,14 @@ const MAX_FILE_WRITE_BYTES = Number.parseInt(process.env.MAX_FILE_WRITE_BYTES ??
 const CLAUDE_COMMAND = resolveClaudeCommand(process.env.CLAUDE_COMMAND ?? 'claude');
 const CLAUDE_ARGS = parseCommandArgs(process.env.CLAUDE_ARGS_JSON);
 const SHELL = process.env.SHELL ?? '/bin/zsh';
+const TMUX_COMMAND = process.env.TMUX_COMMAND?.trim() || 'tmux';
+const TMUX_SESSION_BRIDGE_ENABLED = parseBooleanEnv(process.env.TMUX_SESSION_BRIDGE_ENABLED, true);
+const TMUX_SESSION_PREFIX = process.env.TMUX_SESSION_PREFIX?.trim() || 'juno';
+const TMUX_BINARY = resolveCommandBinary(TMUX_COMMAND);
+const TMUX_AVAILABLE = TMUX_SESSION_BRIDGE_ENABLED && TMUX_BINARY.length > 0;
+if (TMUX_SESSION_BRIDGE_ENABLED && !TMUX_AVAILABLE) {
+  console.warn(`⚠️ tmux bridge requested but '${TMUX_COMMAND}' was not found. Falling back to direct PTY sessions.`);
+}
 const PROJECT_DISCOVERY_ENABLED = parseBooleanEnv(process.env.PROJECT_DISCOVERY_ENABLED, false);
 const PROJECT_DISCOVERY_MAX_DEPTH = Number.parseInt(
   process.env.PROJECT_DISCOVERY_MAX_DEPTH ?? '2',
@@ -82,6 +91,7 @@ const app = express();
 const httpServer = createServer(app);
 const wss = new WebSocketServer({ server: httpServer });
 const sessions = new Map<string, SessionRecord>();
+const socketSessionBindings = new Map<WebSocket, string>();
 const projects = loadProjects(PROJECTS_CONFIG_PATH);
 
 interface ProjectCatalogConfig {
@@ -114,6 +124,7 @@ app.get('/health', (_request: Request, response: Response) => {
     serverName: SERVER_NAME,
     command: CLAUDE_COMMAND,
     args: CLAUDE_ARGS,
+    tmuxBridge: TMUX_AVAILABLE,
     activeSessions: sessions.size,
     projectCount: projects.length,
     pairingPath: '/pairing',
@@ -182,6 +193,16 @@ function parseJsonStringArray(rawValue: string | undefined): string[] {
 }
 
 function resolveClaudeCommand(command: string): string {
+  const resolved = resolveCommandBinary(command);
+  if (resolved.length > 0) {
+    return resolved;
+  }
+
+  console.warn(`⚠️ Could not resolve ${command} with 'which'. Using raw command name.`);
+  return command;
+}
+
+function resolveCommandBinary(command: string): string {
   if (command.includes('/')) {
     return command;
   }
@@ -194,10 +215,10 @@ function resolveClaudeCommand(command: string): string {
       return resolved;
     }
   } catch {
-    console.warn(`⚠️ Could not resolve ${command} with 'which'. Using raw command name.`);
+    return '';
   }
 
-  return command;
+  return '';
 }
 
 function loadProjects(configPath: string): ProjectDefinition[] {
@@ -1093,19 +1114,73 @@ function createSessionSummary(session: SessionRecord): SessionSummary {
     expiresAt: new Date(session.expiresAt).toISOString(),
     hasActiveProcess: !session.hasExited,
     persistence: session.persistence,
+    backend: session.backend,
+    ...(session.sharedSessionName ? { sharedSessionName: session.sharedSessionName } : {}),
     ...(session.clientTabId ? { clientTabId: session.clientTabId } : {}),
   };
 }
 
-function spawnClaudePty(
-  sessionId: string,
-  cols: number,
-  rows: number,
-  projectPath: string,
-): pty.IPty {
-  const commandLine = [CLAUDE_COMMAND, ...CLAUDE_ARGS].map(shellEscape).join(' ');
-  console.log(`🤖 Spawning Claude PTY for ${sessionId} in ${projectPath}: ${commandLine}`);
+function buildClaudeCommandLine(): string {
+  return [CLAUDE_COMMAND, ...CLAUDE_ARGS].map(shellEscape).join(' ');
+}
 
+function toSessionSlug(value: string): string {
+  const normalized = value.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+  return normalized.length > 0 ? normalized : 'workspace';
+}
+
+function buildSharedTmuxSessionName(projectId: string): string {
+  const prefix = toSessionSlug(TMUX_SESSION_PREFIX);
+  const projectSlug = toSessionSlug(projectId);
+  const candidate = `${prefix}-${projectSlug}`.slice(0, 64);
+  return candidate.length > 0 ? candidate : 'juno-workspace';
+}
+
+function tmuxHasSession(sessionName: string): boolean {
+  if (!TMUX_AVAILABLE || !TMUX_BINARY) {
+    return false;
+  }
+
+  try {
+    execFileSync(TMUX_BINARY, ['has-session', '-t', sessionName], { stdio: 'ignore' });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function ensureTmuxSession(sessionName: string, projectPath: string): void {
+  if (!TMUX_AVAILABLE || !TMUX_BINARY) {
+    throw new Error('tmux bridge is not available.');
+  }
+
+  if (tmuxHasSession(sessionName)) {
+    return;
+  }
+
+  const commandLine = buildClaudeCommandLine();
+  console.log(`🧩 Creating shared tmux session ${sessionName} in ${projectPath}`);
+  execFileSync(
+    TMUX_BINARY,
+    ['new-session', '-d', '-s', sessionName, '-c', projectPath, `exec ${commandLine}`],
+    { stdio: 'ignore' },
+  );
+}
+
+function killTmuxSession(sessionName: string): void {
+  if (!TMUX_AVAILABLE || !TMUX_BINARY) {
+    return;
+  }
+
+  try {
+    execFileSync(TMUX_BINARY, ['kill-session', '-t', sessionName], { stdio: 'ignore' });
+  } catch (error) {
+    console.warn(`⚠️ Unable to kill tmux session ${sessionName}: ${error instanceof Error ? error.message : String(error)}`);
+  }
+}
+
+function createDirectPty(cols: number, rows: number, projectPath: string): pty.IPty {
+  const commandLine = buildClaudeCommandLine();
   return pty.spawn(SHELL, ['-lc', `cd ${shellEscape(projectPath)} && exec ${commandLine}`], {
     name: 'xterm-256color',
     cols,
@@ -1119,9 +1194,49 @@ function spawnClaudePty(
   });
 }
 
+function createTmuxPty(cols: number, rows: number, projectPath: string, sessionName: string): pty.IPty {
+  ensureTmuxSession(sessionName, projectPath);
+  return pty.spawn(TMUX_BINARY, ['attach-session', '-t', sessionName], {
+    name: 'xterm-256color',
+    cols,
+    rows,
+    cwd: projectPath,
+    env: {
+      ...process.env,
+      TERM: 'xterm-256color',
+      COLORTERM: 'truecolor',
+    },
+  });
+}
+
+function spawnSessionPty(
+  sessionId: string,
+  cols: number,
+  rows: number,
+  projectPath: string,
+  projectId: string,
+): { pty: pty.IPty; backend: TerminalBackend; sharedSessionName: string | null } {
+  if (TMUX_AVAILABLE && TMUX_BINARY) {
+    const sharedSessionName = buildSharedTmuxSessionName(projectId);
+    console.log(`🤖 Attaching relay ${sessionId} to tmux session ${sharedSessionName} (${projectPath})`);
+    return {
+      pty: createTmuxPty(cols, rows, projectPath, sharedSessionName),
+      backend: 'tmux',
+      sharedSessionName,
+    };
+  }
+
+  const commandLine = buildClaudeCommandLine();
+  console.log(`🤖 Spawning direct PTY for ${sessionId} in ${projectPath}: ${commandLine}`);
+  return {
+    pty: createDirectPty(cols, rows, projectPath),
+    backend: 'pty',
+    sharedSessionName: null,
+  };
+}
+
 function createSession(
   project: ProjectDefinition,
-  socket: WebSocket | null,
   options?: {
     clientTabId?: string;
     persistence?: TerminalPersistenceMode;
@@ -1129,11 +1244,12 @@ function createSession(
 ): SessionRecord {
   const id = `session-${randomUUID()}`;
   const createdAt = now();
-  const processPty = spawnClaudePty(id, DEFAULT_COLS, DEFAULT_ROWS, project.path);
+  const spawned = spawnSessionPty(id, DEFAULT_COLS, DEFAULT_ROWS, project.path, project.id);
+  const processPty = spawned.pty;
 
   const session: SessionRecord = {
     id,
-    socket,
+    sockets: new Set(),
     pty: processPty,
     projectId: project.id,
     projectName: project.name,
@@ -1149,20 +1265,19 @@ function createSession(
     exitCode: null,
     signal: null,
     clientTabId: options?.clientTabId ?? null,
-    persistence: options?.persistence ?? 'ephemeral',
+    persistence: options?.persistence ?? 'persisted',
+    backend: spawned.backend,
+    sharedSessionName: spawned.sharedSessionName,
   };
 
   processPty.onData((data: string) => {
     session.outputBuffer = trimBuffer(session.outputBuffer + data);
     refreshSession(session);
-
-    if (session.socket && session.socket.readyState === WebSocket.OPEN) {
-      sendMessage(session.socket, {
-        type: 'terminal_output',
-        sessionId: session.id,
-        data,
-      });
-    }
+    broadcastToSession(session, {
+      type: 'terminal_output',
+      sessionId: session.id,
+      data,
+    });
   });
 
   processPty.onExit(({ exitCode, signal }: { exitCode: number; signal?: number }) => {
@@ -1171,34 +1286,56 @@ function createSession(
     session.signal = signal ?? null;
     refreshSession(session);
     console.log(`🤖 Claude PTY exited for ${session.id}: code=${exitCode}, signal=${signal ?? 0}`);
-
-    if (session.socket && session.socket.readyState === WebSocket.OPEN) {
-      sendMessage(
-        session.socket,
-        createTerminalExitMessage(session.id, exitCode, signal ?? null),
-      );
-    }
+    broadcastToSession(session, createTerminalExitMessage(session.id, exitCode, signal ?? null));
   });
 
   sessions.set(id, session);
   return session;
 }
 
+function broadcastToSession(session: SessionRecord, message: ServerMessage): void {
+  for (const clientSocket of session.sockets) {
+    sendMessage(clientSocket, message);
+  }
+}
+
 function attachSocket(session: SessionRecord, socket: WebSocket): void {
-  session.socket = socket;
+  const previouslyAttachedSessionId = socketSessionBindings.get(socket);
+  if (previouslyAttachedSessionId && previouslyAttachedSessionId !== session.id) {
+    const previousSession = sessions.get(previouslyAttachedSessionId);
+    if (previousSession) {
+      previousSession.sockets.delete(socket);
+      refreshSession(previousSession);
+    }
+  }
+
+  socketSessionBindings.set(socket, session.id);
+  session.sockets.add(socket);
   refreshSession(session);
 }
 
 function detachSocket(sessionId: string, socket: WebSocket): void {
   const session = sessions.get(sessionId);
+  if (socketSessionBindings.get(socket) === sessionId) {
+    socketSessionBindings.delete(socket);
+  }
+
   if (!session) {
     return;
   }
 
-  if (session.socket === socket) {
-    session.socket = null;
+  if (session.sockets.delete(socket)) {
     refreshSession(session);
   }
+}
+
+function detachSocketByInstance(socket: WebSocket): void {
+  const sessionId = socketSessionBindings.get(socket);
+  if (!sessionId) {
+    return;
+  }
+
+  detachSocket(sessionId, socket);
 }
 
 function cleanupExpiredSessions(): void {
@@ -1209,8 +1346,11 @@ function cleanupExpiredSessions(): void {
     }
 
     console.log(`🧹 Session expired: ${sessionId}`);
-    if (session.socket && session.socket.readyState === WebSocket.OPEN) {
-      session.socket.close(4000, 'Session expired');
+    for (const clientSocket of Array.from(session.sockets)) {
+      if (clientSocket.readyState === WebSocket.OPEN) {
+        clientSocket.close(4000, 'Session expired');
+      }
+      detachSocket(sessionId, clientSocket);
     }
     if (!session.hasExited) {
       session.pty.kill();
@@ -1423,6 +1563,43 @@ function handleCreateSession(socket: WebSocket, message: CreateSessionMessage): 
     return null;
   }
 
+  const sharedTmuxSessionName = TMUX_AVAILABLE ? buildSharedTmuxSessionName(project.id) : null;
+  if (sharedTmuxSessionName) {
+    const reusableSession = Array.from(sessions.values()).find(
+      (candidate) =>
+        candidate.projectId === project.id &&
+        candidate.backend === 'tmux' &&
+        candidate.sharedSessionName === sharedTmuxSessionName &&
+        !candidate.hasExited,
+    );
+
+    if (reusableSession) {
+      attachSocket(reusableSession, socket);
+      console.log(`🔁 Reusing shared tmux relay session: ${reusableSession.id} (${project.name})`);
+      const resumedPayload: SessionResumedMessage = {
+        type: 'session_resumed',
+        sessionId: reusableSession.id,
+        projectId: reusableSession.projectId,
+        projectName: reusableSession.projectName,
+        projectPath: reusableSession.projectPath,
+        projectSource: reusableSession.projectSource,
+        expiresAt: new Date(reusableSession.expiresAt).toISOString(),
+        cols: reusableSession.cols,
+        rows: reusableSession.rows,
+        hasActiveProcess: !reusableSession.hasExited,
+        persistence: reusableSession.persistence,
+        backend: reusableSession.backend,
+        ...(reusableSession.sharedSessionName
+          ? { sharedSessionName: reusableSession.sharedSessionName }
+          : {}),
+        ...(reusableSession.clientTabId ? { clientTabId: reusableSession.clientTabId } : {}),
+      };
+      sendMessage(socket, resumedPayload);
+      sendSnapshot(socket, reusableSession);
+      return reusableSession;
+    }
+  }
+
   const createOptions: { clientTabId?: string; persistence?: TerminalPersistenceMode } = {};
   if (message.clientTabId) {
     createOptions.clientTabId = message.clientTabId;
@@ -1431,7 +1608,7 @@ function handleCreateSession(socket: WebSocket, message: CreateSessionMessage): 
     createOptions.persistence = message.persistence;
   }
 
-  const session = createSession(project, socket, createOptions);
+  const session = createSession(project, createOptions);
   attachSocket(session, socket);
   console.log(`✅ New project session created: ${session.id} (${project.name})`);
 
@@ -1445,8 +1622,13 @@ function handleCreateSession(socket: WebSocket, message: CreateSessionMessage): 
     expiresAt: new Date(session.expiresAt).toISOString(),
     cols: session.cols,
     rows: session.rows,
-    command: [CLAUDE_COMMAND, ...CLAUDE_ARGS].join(' ').trim(),
+    command:
+      session.backend === 'tmux' && session.sharedSessionName
+        ? `${TMUX_BINARY} attach-session -t ${session.sharedSessionName}`
+        : [CLAUDE_COMMAND, ...CLAUDE_ARGS].join(' ').trim(),
     persistence: session.persistence,
+    backend: session.backend,
+    ...(session.sharedSessionName ? { sharedSessionName: session.sharedSessionName } : {}),
     ...(session.clientTabId ? { clientTabId: session.clientTabId } : {}),
   };
   sendMessage(socket, payload);
@@ -1480,6 +1662,8 @@ function handleResumeSession(socket: WebSocket, message: ResumeSessionMessage): 
     rows: existingSession.rows,
     hasActiveProcess: !existingSession.hasExited,
     persistence: existingSession.persistence,
+    backend: existingSession.backend,
+    ...(existingSession.sharedSessionName ? { sharedSessionName: existingSession.sharedSessionName } : {}),
     ...(existingSession.clientTabId ? { clientTabId: existingSession.clientTabId } : {}),
   };
   sendMessage(socket, payload);
@@ -1689,21 +1873,32 @@ function handleTerminalResize(session: SessionRecord, message: TerminalResizeMes
 function handleKillSession(socket: WebSocket, session: SessionRecord, _message: KillSessionMessage): void {
   console.log(`🛑 Kill requested for ${session.id}`);
 
+  if (session.backend === 'tmux' && session.sharedSessionName) {
+    killTmuxSession(session.sharedSessionName);
+  }
+
   if (!session.hasExited) {
     session.pty.kill();
   }
 
+  const exitPayload = createTerminalExitMessage(session.id, session.exitCode ?? 0, session.signal);
+  broadcastToSession(session, exitPayload);
+  for (const clientSocket of Array.from(session.sockets)) {
+    detachSocket(session.id, clientSocket);
+    if (clientSocket !== socket && clientSocket.readyState === WebSocket.OPEN) {
+      clientSocket.close(4001, 'Session killed');
+    }
+  }
   sessions.delete(session.id);
-  sendMessage(socket, createTerminalExitMessage(session.id, session.exitCode ?? 0, session.signal));
 }
 
 function handlePromoteSession(
-  socket: WebSocket,
+  _socket: WebSocket,
   session: SessionRecord,
   _message: PromoteSessionMessage,
 ): void {
   if (session.persistence === 'persisted') {
-    sendMessage(socket, {
+    broadcastToSession(session, {
       type: 'session_promoted',
       sessionId: session.id,
       persistence: 'persisted',
@@ -1721,7 +1916,7 @@ function handlePromoteSession(
     persistence: 'persisted',
     ...(session.clientTabId ? { clientTabId: session.clientTabId } : {}),
   };
-  sendMessage(socket, payload);
+  broadcastToSession(session, payload);
 }
 
 setInterval(cleanupExpiredSessions, CLEANUP_INTERVAL_MS);
@@ -1747,6 +1942,8 @@ wss.on('connection', (socket: WebSocket, request: Request) => {
         rows: existingSession.rows,
         hasActiveProcess: !existingSession.hasExited,
         persistence: existingSession.persistence,
+        backend: existingSession.backend,
+        ...(existingSession.sharedSessionName ? { sharedSessionName: existingSession.sharedSessionName } : {}),
         ...(existingSession.clientTabId ? { clientTabId: existingSession.clientTabId } : {}),
       };
       sendMessage(socket, payload);
@@ -1787,10 +1984,7 @@ wss.on('connection', (socket: WebSocket, request: Request) => {
       }
 
       const requestId = getRequestIdFromMessage(message);
-      const activeSessionId =
-        requestedSessionId ??
-        Array.from(sessions.values()).find((session) => session.socket === socket)?.id ??
-        null;
+      const activeSessionId = socketSessionBindings.get(socket) ?? requestedSessionId ?? null;
       if (!activeSessionId) {
         sendError(socket, {
           type: 'error',
@@ -1865,21 +2059,20 @@ wss.on('connection', (socket: WebSocket, request: Request) => {
   });
 
   socket.on('close', () => {
-    const attachedSession = Array.from(sessions.values()).find((session) => session.socket === socket);
-    if (!attachedSession) {
-      return;
+    const attachedSessionId = socketSessionBindings.get(socket);
+    const attachedSession = attachedSessionId ? sessions.get(attachedSessionId) : null;
+    if (attachedSession) {
+      console.log(`❌ Client disconnected: ${attachedSession.id}`);
     }
 
-    console.log(`❌ Client disconnected: ${attachedSession.id}`);
-    detachSocket(attachedSession.id, socket);
+    detachSocketByInstance(socket);
   });
 
   socket.on('error', (error: Error) => {
-    const attachedSession = Array.from(sessions.values()).find((session) => session.socket === socket);
+    const attachedSessionId = socketSessionBindings.get(socket);
+    const attachedSession = attachedSessionId ? sessions.get(attachedSessionId) : null;
     console.error(`❌ WebSocket error${attachedSession ? ` for ${attachedSession.id}` : ''}: ${error.message}`);
-    if (attachedSession) {
-      detachSocket(attachedSession.id, socket);
-    }
+    detachSocketByInstance(socket);
   });
 });
 
@@ -1891,6 +2084,7 @@ httpServer.listen(PORT, () => {
   console.log(`🖥️  Host: ${os.platform()} ${os.release()}`);
   console.log(`📁 Projects: ${configuredProjectCount} configured, ${discoveredProjectCount} discovered`);
   console.log(`📡 Server: ${SERVER_NAME} (${SERVER_ID})`);
+  console.log(`🧩 Session bridge: ${TMUX_AVAILABLE ? `tmux (${TMUX_BINARY})` : 'direct PTY'}`);
   console.log(`🌐 Local:   http://localhost:${PORT}/dashboard`);
 
   if (PUBLIC_URL) {

@@ -3,6 +3,7 @@ import type WebSocket from 'ws';
 
 export type ProjectSource = 'config' | 'discovered';
 export type TerminalPersistenceMode = 'ephemeral' | 'persisted';
+export type TerminalBackend = 'pty' | 'tmux';
 
 export interface ProjectDefinition {
   id: string;
@@ -182,6 +183,8 @@ export interface SessionSummary {
   hasActiveProcess: boolean;
   clientTabId?: string;
   persistence?: TerminalPersistenceMode;
+  backend?: TerminalBackend;
+  sharedSessionName?: string;
 }
 
 export interface ProjectsListMessage {
@@ -207,6 +210,8 @@ export interface SessionCreatedMessage {
   command: string;
   clientTabId?: string;
   persistence?: TerminalPersistenceMode;
+  backend?: TerminalBackend;
+  sharedSessionName?: string;
 }
 
 export interface SessionResumedMessage {
@@ -222,6 +227,8 @@ export interface SessionResumedMessage {
   hasActiveProcess: boolean;
   clientTabId?: string;
   persistence?: TerminalPersistenceMode;
+  backend?: TerminalBackend;
+  sharedSessionName?: string;
 }
 
 export interface SessionPromotedMessage {
@@ -314,7 +321,7 @@ export type ServerMessage =
 
 export interface SessionRecord {
   id: string;
-  socket: WebSocket | null;
+  sockets: Set<WebSocket>;
   pty: IPty;
   projectId: string;
   projectName: string;
@@ -331,4 +338,6 @@ export interface SessionRecord {
   signal: number | null;
   clientTabId: string | null;
   persistence: TerminalPersistenceMode;
+  backend: TerminalBackend;
+  sharedSessionName: string | null;
 }

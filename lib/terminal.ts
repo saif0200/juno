@@ -19,9 +19,12 @@ export type SessionSummary = {
   hasActiveProcess: boolean;
   clientTabId?: string;
   persistence?: TerminalPersistenceMode;
+  backend?: TerminalBackend;
+  sharedSessionName?: string;
 };
 
 export type TerminalPersistenceMode = 'ephemeral' | 'persisted';
+export type TerminalBackend = 'pty' | 'tmux';
 
 export type CreateSessionRequest = {
   type: 'create_session';
@@ -79,6 +82,8 @@ export type ServerMessage =
       hasActiveProcess?: boolean;
       clientTabId?: string;
       persistence?: TerminalPersistenceMode;
+      backend?: TerminalBackend;
+      sharedSessionName?: string;
     }
   | {
       type: 'session_promoted';
