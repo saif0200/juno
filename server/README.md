@@ -58,6 +58,26 @@ Useful variables:
 - `PROJECT_DISCOVERY_ENABLED`: enable shallow git repo discovery
 - `PROJECT_DISCOVERY_PATHS_JSON`: JSON array of parent directories to scan
 - `PROJECT_DISCOVERY_MAX_DEPTH`: maximum depth for discovery scans
+- `TMUX_SESSION_BRIDGE_ENABLED`: defaults to `true`; when enabled, relay sessions attach to shared tmux sessions for cross-device continuity
+- `TMUX_COMMAND`: tmux binary name/path, defaults to `tmux`
+- `TMUX_SESSION_PREFIX`: shared tmux session prefix, defaults to `juno`
+
+### VS Code + Mobile Continuity
+
+With `TMUX_SESSION_BRIDGE_ENABLED=true`, each project uses a stable shared tmux session name:
+
+```text
+<TMUX_SESSION_PREFIX>-<project-id>
+```
+
+Examples:
+
+- mobile creates/attaches relay session for project `zev` -> tmux session `juno-zev`
+- VS Code terminal can attach to the same shell state with:
+
+```bash
+tmux attach-session -t juno-zev
+```
 
 ## Projects
 

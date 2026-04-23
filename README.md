@@ -7,6 +7,7 @@ The current architecture is:
 - Expo app renders a terminal UI on iOS/Android
 - A local WebSocket relay on your Mac launches and manages Claude Code sessions
 - The phone connects to the relay and streams the live terminal session
+- Sessions can bridge through tmux, so VS Code and mobile can attach to the same active shell
 
 ## Repository Layout
 
@@ -27,31 +28,39 @@ Mobile app:
 - Expo Router
 - react-native-webview
 - xterm.js rendered inside a WebView
+- Terminal tabs and session management
 
 Relay server:
 
-- Node.js
+- Node.js (22+)
 - TypeScript
 - Express
-- ws
+- ws (WebSocket)
 - node-pty
 - local Claude Code CLI
+- mDNS discovery and QR-based pairing
+- Project configuration and discovery
+- tmux session bridging
 
 ## How It Works
 
-1. Start the relay server on your Mac.
-2. The Expo app connects to the relay over WebSocket.
-3. The relay spawns a Claude Code terminal session locally.
-4. The app renders terminal output with xterm inside a WebView.
-5. Keystrokes and resize events are sent back to the relay.
+1. **Start the relay server** on your Mac with `npm run dev` in the `server/` directory.
+2. **Open the Expo app** and navigate to the terminal screen.
+3. **Pair your device** by scanning the QR code from the relay dashboard, or enter the relay URL manually.
+4. **Select or create a project** from the project picker.
+5. **Create a new terminal tab** to spawn a new Claude Code session.
+6. **The app manages tabs** with independent sessions, each with full terminal emulation.
+7. **Sessions persist** and can be resumed later, even after app restarts.
+8. **Keystrokes and resize events** are sent to the relay in real-time.
+
+Each terminal tab runs a separate Claude Code instance in its own PTY process on the Mac. Sessions use a stable TTL, so reopening the app can reconnect to the same session before it expires.
 
 ## Running The Relay
 
-Use Node 20 on macOS for the server.
+Use Node 22+ on macOS for the server.
 
 ```bash
 cd server
-export PATH="/opt/homebrew/opt/node@20/bin:$PATH"
 npm install
 npm run dev
 ```
@@ -59,15 +68,23 @@ npm run dev
 Expected startup:
 
 ```text
-Server listening on ws://localhost:3001
+🖥️  Host: darwin 25.x.x
+📁 Projects: 1 configured, 0 discovered
+📡 Server: your-mac-hostname.local (your-mac-hostname-3001)
+🌐 Local:   http://localhost:3001/dashboard
+📱 mDNS:    http://your-mac-hostname.local:3001/pairing
+📱 LAN IP:  http://192.168.1.25:3001/pairing
 ✅ Ready to accept connections
 ```
 
-Health check:
+The relay provides:
 
-```bash
-curl http://localhost:3001/health
-```
+- **WebSocket relay** on `/` for terminal sessions
+- **Pairing endpoint** on `/pairing` with project metadata and network candidates
+- **Dashboard** on `/dashboard` for QR code and pairing info
+- **Health check** on `/health`
+
+See [server/README.md](server/README.md) for detailed configuration options.
 
 ## Running The Expo App
 
@@ -75,15 +92,15 @@ curl http://localhost:3001/health
 npx expo start -c
 ```
 
-Open the app in Expo Go or the iOS simulator, then go to the `Terminal` tab.
+Open the app in Expo Go or the iOS simulator, then navigate to the terminal screen.
 
-On a physical phone, use your Mac's LAN IP for the relay URL, for example:
+The app supports multiple terminal tabs with independent sessions, and sessions are persisted locally. You can:
 
-```text
-ws://<your-lan-ip>:3001
-```
+- Create new terminal tabs within a project
+- Resume previous sessions
+- Switch between saved devices via QR pairing
 
-The app now supports QR pairing for that relay, so manual URL entry is optional instead of required.
+On a physical phone, use your Mac's LAN IP for the relay URL, or scan the pairing QR code from the relay dashboard.
 
 ## QR Pairing Format
 
@@ -116,18 +133,21 @@ Notes:
 
 Implemented:
 
-- local Claude terminal relay
-- reconnectable WebSocket sessions
-- terminal rendering in the Expo app
-- local bundled xterm assets
-- locally persisted saved devices
-- QR-based relay pairing in Expo
+- **Local Claude terminal relay** with configurable projects
+- **Reconnectable WebSocket sessions** with automatic resume
+- **Terminal rendering** in the Expo app with xterm.js
+- **Terminal tabs** for managing multiple sessions per project
+- **Session persistence** across app restarts and network interruptions
+- **Project picker** with configuration and discovery
+- **Multi-workspace session creation** with per-project isolation
+- **QR-based device pairing** with automatic discovery
+- **Locally persisted devices and session state**
+- **tmux session bridging** for cross-device continuity (Mac/mobile/VS Code)
 
 Not implemented yet:
 
-- authentication
-- persistent session storage
-- project picker and multi-workspace session creation
+- authentication and security policies
+- cloud sync for sessions and devices
 - approvals/workflow UI above the raw terminal
 
 ## Notes For macOS
