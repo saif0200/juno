@@ -133,7 +133,7 @@ function parsePayloadFromUrl(url: URL): PairingPayload | null {
 }
 
 async function fetchPairingPayload(endpoint: string): Promise<PairingPayload> {
-  const response = await fetch(endpoint);
+  const response = await fetch(endpoint, { headers: { 'ngrok-skip-browser-warning': '1' } });
   if (!response.ok) {
     throw new Error(`Pairing endpoint returned ${response.status}.`);
   }

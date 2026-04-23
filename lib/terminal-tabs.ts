@@ -229,7 +229,7 @@ export class TerminalTabsManager {
       projectName: input.projectName,
       connectionUrl: input.connectionUrl,
       status: 'connecting',
-      persistence: input.persistence ?? 'ephemeral',
+      persistence: input.persistence ?? 'persisted',
       relaySessionId: null,
       createdAt,
       lastActiveAt: createdAt,
@@ -321,7 +321,7 @@ export class TerminalTabsManager {
       projectId: active.projectId,
       projectName: active.projectName,
       connectionUrl: active.connectionUrl,
-      persistence: 'ephemeral',
+      persistence: 'persisted',
     });
   }
 
