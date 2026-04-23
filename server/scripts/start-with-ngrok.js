@@ -10,12 +10,12 @@ require('dotenv').config({ path: path.join(__dirname, '../.env') });
 
 const PORT = process.env.PORT ?? '3001';
 const NGROK_ENABLED = (process.env.NGROK_ENABLED ?? 'true') !== 'false';
-const NGROK_TIMEOUT_MS = 20_000;
+const TUNNEL_TIMEOUT_MS = 20_000;
 
 const SERVER_DIR = path.join(__dirname, '..');
 const TS_NODE = path.join(SERVER_DIR, 'node_modules', '.bin', 'ts-node');
 
-let ngrokProc = null;
+let tunnelProc = null;
 let serverProc = null;
 
 function findNgrok() {
@@ -58,6 +58,30 @@ function findNgrok() {
   return null;
 }
 
+function findCloudflared() {
+  const candidates = [];
+  if (process.env.CLOUDFLARED_BIN) candidates.push(process.env.CLOUDFLARED_BIN);
+
+  try {
+    const result = execFileSync('which', ['cloudflared'], { encoding: 'utf8' }).trim();
+    if (result) candidates.push(result);
+  } catch {}
+
+  candidates.push('/opt/homebrew/bin/cloudflared', '/usr/local/bin/cloudflared');
+
+  const seen = new Set();
+  for (const bin of candidates) {
+    if (!bin || seen.has(bin)) continue;
+    seen.add(bin);
+    try {
+      fs.accessSync(bin, fs.constants.X_OK);
+      return bin;
+    } catch {}
+  }
+
+  return null;
+}
+
 function spawnServer(env) {
   serverProc = spawn(TS_NODE, ['src/index.ts'], {
     cwd: SERVER_DIR,
@@ -65,26 +89,23 @@ function spawnServer(env) {
     stdio: 'inherit',
   });
   serverProc.on('exit', (code) => {
-    if (ngrokProc) { try { ngrokProc.kill('SIGTERM'); } catch {} }
+    if (tunnelProc) { try { tunnelProc.kill('SIGTERM'); } catch {} }
     process.exit(code ?? 0);
   });
 }
 
 process.on('SIGINT', () => {
   if (serverProc) { try { serverProc.kill('SIGTERM'); } catch {} }
-  if (ngrokProc) { try { ngrokProc.kill('SIGTERM'); } catch {} }
+  if (tunnelProc) { try { tunnelProc.kill('SIGTERM'); } catch {} }
   process.exit(0);
 });
 
 process.on('SIGTERM', () => {
   if (serverProc) { try { serverProc.kill('SIGTERM'); } catch {} }
-  if (ngrokProc) { try { ngrokProc.kill('SIGTERM'); } catch {} }
+  if (tunnelProc) { try { tunnelProc.kill('SIGTERM'); } catch {} }
   process.exit(0);
 });
 
-// Start ngrok and resolve with the public https URL, or null on failure.
-// Reads ngrok's stdout line-by-line so we never block on unread buffers,
-// and we can show users exactly what ngrok says if something goes wrong.
 function startNgrok(bin) {
   return new Promise((resolve) => {
     const args = ['http', PORT, '--log=stdout', '--log-format=json'];
@@ -92,17 +113,17 @@ function startNgrok(bin) {
       args.push(`--authtoken=${process.env.NGROK_AUTHTOKEN}`);
     }
 
-    ngrokProc = spawn(bin, args, {
-      stdio: ['ignore', 'pipe', 'inherit'],
-    });
+    tunnelProc = spawn(bin, args, { stdio: ['ignore', 'pipe', 'inherit'] });
 
     const timer = setTimeout(() => {
-      console.error('[ngrok] timed out waiting for tunnel — check ngrok auth/config');
+      console.warn('[ngrok] timed out — trying cloudflared...');
+      tunnelProc.kill('SIGTERM');
+      tunnelProc = null;
       resolve(null);
-    }, NGROK_TIMEOUT_MS);
+    }, TUNNEL_TIMEOUT_MS);
 
     let buf = '';
-    ngrokProc.stdout.on('data', (chunk) => {
+    tunnelProc.stdout.on('data', (chunk) => {
       buf += chunk.toString();
       const lines = buf.split('\n');
       buf = lines.pop() ?? '';
@@ -110,11 +131,9 @@ function startNgrok(bin) {
         if (!line.trim()) continue;
         let entry;
         try { entry = JSON.parse(line); } catch { continue; }
-        // Show errors to the user
         if (entry.lvl === 'eror' || entry.lvl === 'crit') {
           console.error(`[ngrok] ${entry.msg}${entry.err ? ': ' + entry.err : ''}`);
         }
-        // Tunnel URL appears in the "started tunnel" event
         if (entry.msg === 'started tunnel' && typeof entry.url === 'string') {
           clearTimeout(timer);
           resolve(entry.url);
@@ -122,11 +141,44 @@ function startNgrok(bin) {
       }
     });
 
-    ngrokProc.on('exit', (code) => {
+    tunnelProc.on('exit', (code) => {
       clearTimeout(timer);
-      if (code !== 0) {
-        console.error(`[ngrok] exited with code ${code}`);
+      if (code !== 0) console.warn(`[ngrok] exited with code ${code} — trying cloudflared...`);
+      tunnelProc = null;
+      resolve(null);
+    });
+  });
+}
+
+function startCloudflared(bin) {
+  return new Promise((resolve) => {
+    const args = ['tunnel', '--url', `http://localhost:${PORT}`, '--no-autoupdate'];
+
+    tunnelProc = spawn(bin, args, { stdio: ['ignore', 'pipe', 'pipe'] });
+
+    const timer = setTimeout(() => {
+      console.warn('[cloudflared] timed out waiting for tunnel URL');
+      resolve(null);
+    }, TUNNEL_TIMEOUT_MS);
+
+    const urlPattern = /https:\/\/[a-z0-9-]+\.trycloudflare\.com/;
+
+    function checkChunk(chunk) {
+      const text = chunk.toString();
+      const match = text.match(urlPattern);
+      if (match) {
+        clearTimeout(timer);
+        resolve(match[0]);
       }
+    }
+
+    tunnelProc.stdout.on('data', checkChunk);
+    tunnelProc.stderr.on('data', checkChunk);
+
+    tunnelProc.on('exit', (code) => {
+      clearTimeout(timer);
+      if (code !== 0) console.warn(`[cloudflared] exited with code ${code}`);
+      tunnelProc = null;
       resolve(null);
     });
   });
@@ -145,25 +197,34 @@ async function main() {
     return;
   }
 
+  // Try ngrok first
   const ngrokBin = findNgrok();
-  if (!ngrokBin) {
-    console.warn('⚠️  ngrok not found — starting without tunnel (LAN only)');
-    spawnServer(process.env);
-    return;
+  if (ngrokBin) {
+    console.log(`ℹ️  Using ngrok binary: ${ngrokBin}`);
+    console.log(`🚇 Starting ngrok tunnel on port ${PORT}...`);
+    const tunnelUrl = await startNgrok(ngrokBin);
+    if (tunnelUrl) {
+      console.log(`🌍 ngrok tunnel ready: ${tunnelUrl}`);
+      spawnServer({ ...process.env, PUBLIC_URL: tunnelUrl });
+      return;
+    }
   }
 
-  console.log(`ℹ️  Using ngrok binary: ${ngrokBin}`);
-  console.log(`🚇 Starting ngrok tunnel on port ${PORT}...`);
-  const tunnelUrl = await startNgrok(ngrokBin);
-
-  if (!tunnelUrl) {
-    console.warn('⚠️  Starting without tunnel (LAN only)');
-    spawnServer(process.env);
-    return;
+  // Fall back to cloudflared
+  const cloudflaredBin = findCloudflared();
+  if (cloudflaredBin) {
+    console.log(`ℹ️  Using cloudflared binary: ${cloudflaredBin}`);
+    console.log(`🚇 Starting cloudflared tunnel on port ${PORT}...`);
+    const tunnelUrl = await startCloudflared(cloudflaredBin);
+    if (tunnelUrl) {
+      console.log(`🌍 cloudflared tunnel ready: ${tunnelUrl}`);
+      spawnServer({ ...process.env, PUBLIC_URL: tunnelUrl });
+      return;
+    }
   }
 
-  console.log(`🌍 ngrok tunnel ready: ${tunnelUrl}`);
-  spawnServer({ ...process.env, PUBLIC_URL: tunnelUrl });
+  console.warn('⚠️  No tunnel available — starting LAN only');
+  spawnServer(process.env);
 }
 
 main().catch((err) => {
