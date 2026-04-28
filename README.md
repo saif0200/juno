@@ -13,13 +13,26 @@ The architecture:
 
 ```
 .
-├── app/                    expo router app (workspace, terminal, explorer tabs)
-├── assets/terminal/        bundled xterm.js runtime for the webview terminal
+├── mobile/                 expo app (workspace, terminal, explorer tabs)
+│   ├── app/                expo router screens
+│   ├── components/         mobile-only ui components
+│   ├── lib/                mobile-only modules (terminal, editor, pairing, devices)
+│   ├── hooks/  constants/  assets/
+│   └── package.json
 ├── server/                 local relay server (node + typescript)
-├── uploads/                device mockup images used by the landing page
-├── web/                    self-contained landing page (web/index.html)
+├── landing/                static landing page deployed via vercel
+│   ├── index.html
+│   └── public/             device mockup images
 └── README.md
 ```
+
+Each top-level folder is a deployable artifact:
+
+| folder | deploys to |
+|---|---|
+| `mobile/` | App Store / Play Store / Expo |
+| `server/` | host machine (Mac) or container |
+| `landing/` | Vercel (set Root Directory to `landing` in project settings) |
 
 ## Tech Stack
 
@@ -164,6 +177,7 @@ To also discover git repos automatically, enable discovery in the same file:
 ## Running The Expo App
 
 ```bash
+cd mobile
 npx expo start -c
 ```
 
