@@ -1,0 +1,42 @@
+{
+  "name": "@juno-dev/cli",
+  "version": "0.1.0",
+  "description": "Local relay CLI for the Juno mobile IDE app.",
+  "license": "MIT",
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "bin": {
+    "juno": "./bin/juno.js"
+  },
+  "main": "dist/cli.js",
+  "files": [
+    "bin",
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "dev": "node scripts/start-with-ngrok.js",
+    "dev:notunnel": "ts-node src/cli.ts pair",
+    "build": "tsc -p tsconfig.json",
+    "start": "node bin/juno.js",
+    "prepare": "npm run build",
+    "test:client": "node scripts/test-client.js"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.5",
+    "express": "^4.21.2",
+    "node-pty": "^1.0.0",
+    "qrcode-terminal": "^0.12.0",
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.3",
+    "@types/node": "^22.15.3",
+    "@types/qrcode-terminal": "^0.12.2",
+    "@types/ws": "^8.5.13",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.8.3"
+  }
+}
