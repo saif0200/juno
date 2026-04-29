@@ -8,7 +8,7 @@ const path = require('path');
 // Load .env so PUBLIC_URL overrides are respected
 require('dotenv').config({ path: path.join(__dirname, '../.env') });
 
-const PORT = process.env.PORT ?? '3001';
+const PORT = process.env.PORT ?? '7878';
 const NGROK_ENABLED = (process.env.NGROK_ENABLED ?? 'true') !== 'false';
 const TUNNEL_TIMEOUT_MS = 20_000;
 
@@ -197,29 +197,39 @@ async function main() {
     return;
   }
 
-  // Try ngrok first
-  const ngrokBin = findNgrok();
-  if (ngrokBin) {
-    console.log(`ℹ️  Using ngrok binary: ${ngrokBin}`);
-    console.log(`🚇 Starting ngrok tunnel on port ${PORT}...`);
-    const tunnelUrl = await startNgrok(ngrokBin);
-    if (tunnelUrl) {
-      console.log(`🌍 ngrok tunnel ready: ${tunnelUrl}`);
-      spawnServer({ ...process.env, PUBLIC_URL: tunnelUrl });
-      return;
-    }
-  }
+  // Prefer cloudflared (zero-auth anonymous tunnels). Fall back to ngrok if installed.
+  // Override with TUNNEL_PREFER=ngrok if you have an authed ngrok setup you want first.
+  const prefer = (process.env.TUNNEL_PREFER ?? 'cloudflared').toLowerCase();
+  const order = prefer === 'ngrok' ? ['ngrok', 'cloudflared'] : ['cloudflared', 'ngrok'];
 
-  // Fall back to cloudflared
-  const cloudflaredBin = findCloudflared();
-  if (cloudflaredBin) {
-    console.log(`ℹ️  Using cloudflared binary: ${cloudflaredBin}`);
-    console.log(`🚇 Starting cloudflared tunnel on port ${PORT}...`);
-    const tunnelUrl = await startCloudflared(cloudflaredBin);
-    if (tunnelUrl) {
-      console.log(`🌍 cloudflared tunnel ready: ${tunnelUrl}`);
-      spawnServer({ ...process.env, PUBLIC_URL: tunnelUrl });
-      return;
+  for (const tunnel of order) {
+    if (tunnel === 'cloudflared') {
+      const cloudflaredBin = findCloudflared();
+      if (cloudflaredBin) {
+        console.log(`ℹ️  Using cloudflared binary: ${cloudflaredBin}`);
+        console.log(`🚇 Starting cloudflared tunnel on port ${PORT}...`);
+        const tunnelUrl = await startCloudflared(cloudflaredBin);
+        if (tunnelUrl) {
+          console.log(`🌍 cloudflared tunnel ready: ${tunnelUrl}`);
+          spawnServer({ ...process.env, PUBLIC_URL: tunnelUrl });
+          return;
+        }
+      }
+      continue;
+    }
+
+    if (tunnel === 'ngrok') {
+      const ngrokBin = findNgrok();
+      if (ngrokBin) {
+        console.log(`ℹ️  Using ngrok binary: ${ngrokBin}`);
+        console.log(`🚇 Starting ngrok tunnel on port ${PORT}...`);
+        const tunnelUrl = await startNgrok(ngrokBin);
+        if (tunnelUrl) {
+          console.log(`🌍 ngrok tunnel ready: ${tunnelUrl}`);
+          spawnServer({ ...process.env, PUBLIC_URL: tunnelUrl });
+          return;
+        }
+      }
     }
   }
 
