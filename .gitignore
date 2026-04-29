@@ -18,3 +18,5 @@ yarn-error.*
 
 # editor
 .claude/
+.vscode/
+.idea/
