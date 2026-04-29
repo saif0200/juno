@@ -4,6 +4,7 @@ import { StatusBar } from 'expo-status-bar';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
+  Keyboard,
   KeyboardAvoidingView,
   Platform,
   Pressable,
@@ -34,6 +35,7 @@ type RouteParams = {
   projectName?: string | string[];
   sessionId?: string | string[];
   persistence?: string | string[];
+  command?: string | string[];
 };
 
 const C = {
@@ -81,6 +83,16 @@ export default function TerminalTabScreen() {
   const [showProjectSheet, setShowProjectSheet] = useState(false);
   const [projectsLoading, setProjectsLoading] = useState(false);
   const [availableProjects, setAvailableProjects] = useState<ProjectDefinition[]>([]);
+  const [isKeyboardVisible, setIsKeyboardVisible] = useState(false);
+
+  useEffect(() => {
+    const showSub = Keyboard.addListener('keyboardDidShow', () => setIsKeyboardVisible(true));
+    const hideSub = Keyboard.addListener('keyboardDidHide', () => setIsKeyboardVisible(false));
+    return () => {
+      showSub.remove();
+      hideSub.remove();
+    };
+  }, []);
 
   const activeTab = useMemo(
     () => snapshot.tabs.find((tab) => tab.id === snapshot.activeTabId) ?? null,
@@ -114,6 +126,7 @@ export default function TerminalTabScreen() {
   const projectName = firstParam(params.projectName);
   const sessionId = firstParam(params.sessionId);
   const persistence = normalizePersistence(firstParam(params.persistence));
+  const command = firstParam(params.command);
 
   useEffect(() => {
     if (!requestId || consumedRequestIdRef.current === requestId) return;
@@ -125,6 +138,7 @@ export default function TerminalTabScreen() {
         projectName,
         connectionUrl: url,
         persistence,
+        command,
       });
       setStatusMessage(result.error);
       return;
@@ -140,7 +154,7 @@ export default function TerminalTabScreen() {
       });
       setStatusMessage(result.error);
     }
-  }, [action, persistence, projectId, projectName, requestId, sessionId, url]);
+  }, [action, command, persistence, projectId, projectName, requestId, sessionId, url]);
 
   function handleTerminalBridgeMessage(event: WebViewMessageEvent): void {
     const message = JSON.parse(event.nativeEvent.data) as TerminalBridgeMessage;
@@ -153,12 +167,18 @@ export default function TerminalTabScreen() {
       setLastError(`Runtime error: ${message.message}`);
       return;
     }
+    if (message.type === 'terminal_user_scroll') {
+      if (isKeyboardVisible) dismissSoftKeyboard();
+      return;
+    }
     if (!snapshot.activeTabId) return;
     if (message.type === 'terminal_input') {
       terminalTabsManager.sendInputToActive(message.data);
       return;
     }
-    terminalTabsManager.resizeActive(message.cols, message.rows);
+    if (message.type === 'terminal_resize') {
+      terminalTabsManager.resizeActive(message.cols, message.rows);
+    }
   }
 
   async function openProjectChooser(): Promise<void> {
@@ -239,6 +259,11 @@ export default function TerminalTabScreen() {
             )}
           </View>
           <View style={styles.topBarRight}>
+            {isKeyboardVisible ? (
+              <Pressable onPress={dismissSoftKeyboard} style={styles.iconBtn}>
+                <MaterialIcons color={C.muted} name="keyboard-hide" size={18} />
+              </Pressable>
+            ) : null}
             <Pressable onPress={() => setShowTabSheet(true)} style={styles.iconBtn}>
               <MaterialIcons color={C.muted} name="layers" size={18} />
             </Pressable>
