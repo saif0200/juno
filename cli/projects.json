@@ -5,6 +5,12 @@
       "name": "Juno",
       "path": "..",
       "favorite": true
+    },
+    {
+      "id": "cwd-cli-7fca72a0",
+      "name": "cli",
+      "path": "/Users/misbahsmac/Desktop/GitHub/juno/cli",
+      "favorite": true
     }
   ],
   "discovery": {
