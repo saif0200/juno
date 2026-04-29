@@ -4,167 +4,54 @@ import {
   type ProjectDefinition,
   type ReadFileRequest,
   type ServerMessage,
-  type TerminalPersistenceMode,
   type WorkspaceFileEntry,
   type WriteFileRequest,
 } from '@/lib/terminal';
 
-const TAB_OUTPUT_LIMIT = 200000;
-const MAX_TAB_COUNT = 6;
-const LIVE_TAB_POOL_SIZE = 3;
-const PROJECT_LIST_TIMEOUT_MS = 5000;
-const FILE_REQUEST_TIMEOUT_MS = 8000;
-const TAB_READY_TIMEOUT_MS = 7000;
-
-type TabConnectionStatus = 'connecting' | 'live' | 'parked' | 'disconnected' | 'exited' | 'error';
-
-type TerminalExitState = {
-  exitCode: number;
-  signal?: number;
-  message: string;
-};
-
-export type TerminalTabState = {
-  id: string;
-  title: string;
-  projectId: string;
-  projectName: string;
-  connectionUrl: string;
-  status: TabConnectionStatus;
-  persistence: TerminalPersistenceMode;
-  relaySessionId: string | null;
-  createdAt: string;
-  lastActiveAt: string;
-  lastError: string | null;
-  outputPreview: string;
-  exitState: TerminalExitState | null;
-};
-
-type ManagedTab = TerminalTabState & {
-  outputBuffer: string;
-  socket: WebSocket | null;
-  pingInterval: ReturnType<typeof setInterval> | null;
-  disconnectIntent: 'none' | 'parking' | 'closing';
-  pendingPromotion: boolean;
-  cols: number;
-  rows: number;
-  pendingFileRequests: Map<
-    string,
-    {
-      timeout: ReturnType<typeof setTimeout>;
-      resolve: (value: unknown) => void;
-      reject: (error: Error) => void;
-    }
-  >;
-};
-
-export type TabsSnapshot = {
-  tabs: TerminalTabState[];
-  activeTabId: string | null;
-  activeTabIndex: number;
-  revision: number;
-};
-
-type ManagerEvent =
-  | { type: 'tabs_changed'; snapshot: TabsSnapshot }
-  | { type: 'active_output'; tabId: string; data: string }
-  | { type: 'active_snapshot'; tabId: string; data: string };
-
-type OpenProjectTabInput = {
-  projectId: string;
-  projectName: string;
-  connectionUrl: string;
-  persistence?: TerminalPersistenceMode;
-};
-
-type OpenExistingSessionInput = {
-  relaySessionId: string;
-  projectId: string;
-  projectName: string;
-  connectionUrl: string;
-  persistence?: TerminalPersistenceMode;
-};
-
-type OpenTabResult = {
-  tabId: string | null;
-  error: string | null;
-};
-
-type ProjectCatalogResult = {
-  projects: ProjectDefinition[];
-  error: string | null;
-};
-
-type ListFilesResult = {
-  entries: WorkspaceFileEntry[];
-  path: string;
-  error: string | null;
-};
-
-type ReadFileResult = {
-  path: string;
-  content: string | null;
-  updatedAt: string | null;
-  error: string | null;
-};
-
-type WriteFileResult = {
-  path: string;
-  updatedAt: string | null;
-  bytes: number;
-  error: string | null;
-};
-
-function nowIso(): string {
-  return new Date().toISOString();
-}
-
-function createTabId(): string {
-  return `tab-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
-}
-
-function trimOutput(value: string): string {
-  if (value.length <= TAB_OUTPUT_LIMIT) {
-    return value;
-  }
-
-  return value.slice(value.length - TAB_OUTPUT_LIMIT);
-}
-
-function getPreview(value: string): string {
-  if (!value) {
-    return '';
-  }
-
-  const lines = value.split(/\r?\n/).filter((line) => line.trim().length > 0);
-  if (lines.length === 0) {
-    return '';
-  }
-
-  return lines[lines.length - 1].slice(0, 120);
-}
-
-function buildSessionAttachUrl(connectionUrl: string, sessionId: string): string {
-  try {
-    const url = new URL(connectionUrl);
-    url.searchParams.set('sessionId', sessionId);
-    return url.toString();
-  } catch {
-    return connectionUrl;
-  }
-}
+import {
+  DEFAULT_TAB_COLS,
+  DEFAULT_TAB_ROWS,
+  LIVE_TAB_POOL_SIZE,
+  MAX_TAB_COUNT,
+  PING_INTERVAL_MS,
+  PROJECT_LIST_TIMEOUT_MS,
+  READY_POLL_INTERVAL_MS,
+  TAB_READY_TIMEOUT_MS,
+} from './constants';
+import {
+  rejectAllPendingFileRequests,
+  rejectFileRequest,
+  resolveFileRequest,
+  trackFileRequest,
+} from './file-request-store';
+import type {
+  ListFilesResult,
+  ManagedTab,
+  ManagerEvent,
+  OpenExistingSessionInput,
+  OpenProjectTabInput,
+  OpenTabResult,
+  ProjectCatalogResult,
+  ReadFileResult,
+  TabsSnapshot,
+  TerminalTabState,
+  WriteFileResult,
+} from './types';
+import {
+  buildSessionAttachUrl,
+  createRequestId,
+  createTabId,
+  getPreview,
+  nowIso,
+  trimOutput,
+} from './utils';
 
 export class TerminalTabsManager {
   private tabs = new Map<string, ManagedTab>();
-
   private tabOrder: string[] = [];
-
   private activeTabId: string | null = null;
-
   private listeners = new Set<(event: ManagerEvent) => void>();
-
   private revision = 0;
-
   private projectCatalogCache = new Map<string, ProjectDefinition[]>();
 
   subscribe(listener: (event: ManagerEvent) => void): () => void {
@@ -181,7 +68,9 @@ export class TerminalTabsManager {
       .filter((tab): tab is ManagedTab => Boolean(tab))
       .map((tab) => this.toPublicTab(tab));
 
-    const activeTabIndex = this.activeTabId ? orderedTabs.findIndex((tab) => tab.id === this.activeTabId) : -1;
+    const activeTabIndex = this.activeTabId
+      ? orderedTabs.findIndex((tab) => tab.id === this.activeTabId)
+      : -1;
 
     return {
       tabs: orderedTabs,
@@ -196,10 +85,7 @@ export class TerminalTabsManager {
   }
 
   getActiveTab(): TerminalTabState | null {
-    if (!this.activeTabId) {
-      return null;
-    }
-
+    if (!this.activeTabId) return null;
     const tab = this.tabs.get(this.activeTabId);
     return tab ? this.toPublicTab(tab) : null;
   }
@@ -220,39 +106,15 @@ export class TerminalTabsManager {
       };
     }
 
-    const id = createTabId();
-    const createdAt = nowIso();
-    const tab: ManagedTab = {
-      id,
-      title: input.projectName,
+    const tab = this.createTab({
       projectId: input.projectId,
       projectName: input.projectName,
       connectionUrl: input.connectionUrl,
-      status: 'connecting',
       persistence: input.persistence ?? 'persisted',
       relaySessionId: null,
-      createdAt,
-      lastActiveAt: createdAt,
-      lastError: null,
-      outputPreview: '',
-      exitState: null,
-      outputBuffer: '',
-      socket: null,
-      pingInterval: null,
-      disconnectIntent: 'none',
-      pendingPromotion: false,
-      cols: 100,
-      rows: 28,
-      pendingFileRequests: new Map(),
-    };
-
-    this.tabs.set(tab.id, tab);
-    this.tabOrder.push(tab.id);
-    this.activeTabId = tab.id;
-    this.emitTabsChanged();
+    });
     this.connectTab(tab, 'create');
     this.enforceWarmPool();
-
     return { tabId: tab.id, error: null };
   }
 
@@ -272,50 +134,21 @@ export class TerminalTabsManager {
       };
     }
 
-    const id = createTabId();
-    const createdAt = nowIso();
-    const tab: ManagedTab = {
-      id,
-      title: input.projectName,
+    const tab = this.createTab({
       projectId: input.projectId,
       projectName: input.projectName,
       connectionUrl: input.connectionUrl,
-      status: 'connecting',
       persistence: input.persistence ?? 'persisted',
       relaySessionId: input.relaySessionId,
-      createdAt,
-      lastActiveAt: createdAt,
-      lastError: null,
-      outputPreview: '',
-      exitState: null,
-      outputBuffer: '',
-      socket: null,
-      pingInterval: null,
-      disconnectIntent: 'none',
-      pendingPromotion: false,
-      cols: 100,
-      rows: 28,
-      pendingFileRequests: new Map(),
-    };
-
-    this.tabs.set(tab.id, tab);
-    this.tabOrder.push(tab.id);
-    this.activeTabId = tab.id;
-    this.emitTabsChanged();
+    });
     this.connectTab(tab, 'resume');
     this.enforceWarmPool();
-
     return { tabId: tab.id, error: null };
   }
 
   createTabLikeActive(): OpenTabResult {
     const active = this.activeTabId ? this.tabs.get(this.activeTabId) : null;
-    if (!active) {
-      return {
-        tabId: null,
-        error: 'No active tab. Open a project first.',
-      };
-    }
+    if (!active) return { tabId: null, error: 'No active tab. Open a project first.' };
 
     return this.openProjectTab({
       projectId: active.projectId,
@@ -327,15 +160,17 @@ export class TerminalTabsManager {
 
   activateTab(tabId: string): void {
     const tab = this.tabs.get(tabId);
-    if (!tab) {
-      return;
-    }
+    if (!tab) return;
 
     tab.lastActiveAt = nowIso();
     this.activeTabId = tabId;
     this.emitTabsChanged();
 
-    if (tab.status === 'parked' || tab.status === 'disconnected' || (tab.status === 'error' && tab.relaySessionId)) {
+    if (
+      tab.status === 'parked' ||
+      tab.status === 'disconnected' ||
+      (tab.status === 'error' && tab.relaySessionId)
+    ) {
       this.connectTab(tab, tab.relaySessionId ? 'resume' : 'create');
     }
 
@@ -343,20 +178,14 @@ export class TerminalTabsManager {
   }
 
   switchRelative(offset: 1 | -1): boolean {
-    if (this.tabOrder.length <= 1 || !this.activeTabId) {
-      return false;
-    }
+    if (this.tabOrder.length <= 1 || !this.activeTabId) return false;
 
     const activeIndex = this.tabOrder.indexOf(this.activeTabId);
-    if (activeIndex < 0) {
-      return false;
-    }
+    if (activeIndex < 0) return false;
 
     const nextIndex = (activeIndex + offset + this.tabOrder.length) % this.tabOrder.length;
     const nextTabId = this.tabOrder[nextIndex];
-    if (!nextTabId || nextTabId === this.activeTabId) {
-      return false;
-    }
+    if (!nextTabId || nextTabId === this.activeTabId) return false;
 
     this.activateTab(nextTabId);
     return true;
@@ -364,9 +193,7 @@ export class TerminalTabsManager {
 
   closeTab(tabId: string): void {
     const tab = this.tabs.get(tabId);
-    if (!tab) {
-      return;
-    }
+    if (!tab) return;
 
     const closedIndex = this.tabOrder.indexOf(tabId);
 
@@ -405,52 +232,42 @@ export class TerminalTabsManager {
 
   sendInputToActive(data: string): void {
     const active = this.activeTabId ? this.tabs.get(this.activeTabId) : null;
-    if (!active || !active.socket || active.socket.readyState !== WebSocket.OPEN) {
-      return;
-    }
+    if (!active || !active.socket || active.socket.readyState !== WebSocket.OPEN) return;
 
     active.socket.send(JSON.stringify({ type: 'terminal_input', data }));
   }
 
   resizeActive(cols: number, rows: number): void {
     const active = this.activeTabId ? this.tabs.get(this.activeTabId) : null;
-    if (!active) {
-      return;
-    }
+    if (!active) return;
 
     active.cols = cols;
     active.rows = rows;
 
-    if (!active.socket || active.socket.readyState !== WebSocket.OPEN) {
-      return;
-    }
-
+    if (!active.socket || active.socket.readyState !== WebSocket.OPEN) return;
     active.socket.send(JSON.stringify({ type: 'terminal_resize', cols, rows }));
   }
 
   reconnectActive(): void {
     const active = this.activeTabId ? this.tabs.get(this.activeTabId) : null;
-    if (!active) {
-      return;
-    }
-
+    if (!active) return;
     this.connectTab(active, active.relaySessionId ? 'resume' : 'create');
   }
 
   promoteActiveTab(): void {
     const active = this.activeTabId ? this.tabs.get(this.activeTabId) : null;
-    if (!active || active.persistence === 'persisted') {
-      return;
-    }
+    if (!active || active.persistence === 'persisted') return;
 
     active.pendingPromotion = true;
-
     if (active.socket && active.socket.readyState === WebSocket.OPEN) {
       active.socket.send(JSON.stringify({ type: 'promote_session' }));
     }
   }
 
-  async fetchProjectsForConnection(connectionUrl: string, forceRefresh = false): Promise<ProjectCatalogResult> {
+  async fetchProjectsForConnection(
+    connectionUrl: string,
+    forceRefresh = false,
+  ): Promise<ProjectCatalogResult> {
     if (!forceRefresh) {
       const cached = this.projectCatalogCache.get(connectionUrl);
       if (cached && cached.length > 0) {
@@ -464,14 +281,9 @@ export class TerminalTabsManager {
       const socket = new WebSocket(connectionUrl);
 
       const finish = (result: ProjectCatalogResult): void => {
-        if (settled) {
-          return;
-        }
-
+        if (settled) return;
         settled = true;
-        if (timeout) {
-          clearTimeout(timeout);
-        }
+        if (timeout) clearTimeout(timeout);
         socket.close();
         resolve(result);
       };
@@ -513,37 +325,23 @@ export class TerminalTabsManager {
   }
 
   async listFilesForActive(path = ''): Promise<ListFilesResult> {
-    let active: ManagedTab | null;
-    try {
-      active = await this.waitForActiveSessionReady();
-    } catch (error) {
-      return {
-        entries: [],
-        path,
-        error: error instanceof Error ? error.message : 'Active session is not ready.',
-      };
-    }
-
-    if (!active) {
-      return { entries: [], path, error: 'No active tab.' };
-    }
+    const active = await this.tryWaitActive(path, (error) => ({ entries: [], path, error }));
+    if ('entries' in active) return active;
 
     const payload: ListFilesRequest = {
       type: 'list_files',
-      requestId: this.createRequestId(),
+      requestId: createRequestId(),
       ...(path ? { path } : {}),
     };
 
     try {
-      const response = await this.sendFileRequest<{ type: 'files_list'; requestId: string; path: string; entries: WorkspaceFileEntry[] }>(
-        active,
-        payload,
-      );
-      return {
-        entries: response.entries,
-        path: response.path,
-        error: null,
-      };
+      const response = await this.sendFileRequest<{
+        type: 'files_list';
+        requestId: string;
+        path: string;
+        entries: WorkspaceFileEntry[];
+      }>(active, payload);
+      return { entries: response.entries, path: response.path, error: null };
     } catch (error) {
       return {
         entries: [],
@@ -554,33 +352,28 @@ export class TerminalTabsManager {
   }
 
   async readFileForActive(path: string): Promise<ReadFileResult> {
-    let active: ManagedTab | null;
-    try {
-      active = await this.waitForActiveSessionReady();
-    } catch (error) {
-      return {
-        path,
-        content: null,
-        updatedAt: null,
-        error: error instanceof Error ? error.message : 'Active session is not ready.',
-      };
-    }
-
-    if (!active) {
-      return { path, content: null, updatedAt: null, error: 'No active tab.' };
-    }
+    const active = await this.tryWaitActive(path, (error) => ({
+      path,
+      content: null,
+      updatedAt: null,
+      error,
+    }));
+    if ('content' in active) return active;
 
     const payload: ReadFileRequest = {
       type: 'read_file',
-      requestId: this.createRequestId(),
+      requestId: createRequestId(),
       path,
     };
 
     try {
-      const response = await this.sendFileRequest<{ type: 'file_content'; requestId: string; path: string; content: string; updatedAt: string }>(
-        active,
-        payload,
-      );
+      const response = await this.sendFileRequest<{
+        type: 'file_content';
+        requestId: string;
+        path: string;
+        content: string;
+        updatedAt: string;
+      }>(active, payload);
       return {
         path: response.path,
         content: response.content,
@@ -598,34 +391,29 @@ export class TerminalTabsManager {
   }
 
   async writeFileForActive(path: string, content: string): Promise<WriteFileResult> {
-    let active: ManagedTab | null;
-    try {
-      active = await this.waitForActiveSessionReady();
-    } catch (error) {
-      return {
-        path,
-        updatedAt: null,
-        bytes: 0,
-        error: error instanceof Error ? error.message : 'Active session is not ready.',
-      };
-    }
-
-    if (!active) {
-      return { path, updatedAt: null, bytes: 0, error: 'No active tab.' };
-    }
+    const active = await this.tryWaitActive(path, (error) => ({
+      path,
+      updatedAt: null,
+      bytes: 0,
+      error,
+    }));
+    if ('bytes' in active) return active;
 
     const payload: WriteFileRequest = {
       type: 'write_file',
-      requestId: this.createRequestId(),
+      requestId: createRequestId(),
       path,
       content,
     };
 
     try {
-      const response = await this.sendFileRequest<{ type: 'file_saved'; requestId: string; path: string; updatedAt: string; bytes: number }>(
-        active,
-        payload,
-      );
+      const response = await this.sendFileRequest<{
+        type: 'file_saved';
+        requestId: string;
+        path: string;
+        updatedAt: string;
+        bytes: number;
+      }>(active, payload);
       return {
         path: response.path,
         updatedAt: response.updatedAt,
@@ -642,36 +430,75 @@ export class TerminalTabsManager {
     }
   }
 
-  private createRequestId(): string {
-    return `req-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+  private createTab(input: {
+    projectId: string;
+    projectName: string;
+    connectionUrl: string;
+    persistence: ManagedTab['persistence'];
+    relaySessionId: string | null;
+  }): ManagedTab {
+    const id = createTabId();
+    const createdAt = nowIso();
+    const tab: ManagedTab = {
+      id,
+      title: input.projectName,
+      projectId: input.projectId,
+      projectName: input.projectName,
+      connectionUrl: input.connectionUrl,
+      status: 'connecting',
+      persistence: input.persistence,
+      relaySessionId: input.relaySessionId,
+      createdAt,
+      lastActiveAt: createdAt,
+      lastError: null,
+      outputPreview: '',
+      exitState: null,
+      outputBuffer: '',
+      socket: null,
+      pingInterval: null,
+      disconnectIntent: 'none',
+      pendingPromotion: false,
+      cols: DEFAULT_TAB_COLS,
+      rows: DEFAULT_TAB_ROWS,
+      pendingFileRequests: new Map(),
+    };
+
+    this.tabs.set(tab.id, tab);
+    this.tabOrder.push(tab.id);
+    this.activeTabId = tab.id;
+    this.emitTabsChanged();
+    return tab;
+  }
+
+  private async tryWaitActive<TFallback>(
+    _path: string,
+    fallback: (error: string) => TFallback,
+  ): Promise<ManagedTab | TFallback> {
+    let active: ManagedTab | null;
+    try {
+      active = await this.waitForActiveSessionReady();
+    } catch (error) {
+      return fallback(error instanceof Error ? error.message : 'Active session is not ready.');
+    }
+
+    if (!active) return fallback('No active tab.');
+    return active;
   }
 
   private async waitForActiveSessionReady(): Promise<ManagedTab | null> {
     const active = this.activeTabId ? this.tabs.get(this.activeTabId) : null;
-    if (!active) {
-      return null;
-    }
-
-    if (this.isTabReadyForFileRequests(active)) {
-      return active;
-    }
+    if (!active) return null;
+    if (this.isTabReadyForFileRequests(active)) return active;
 
     const start = Date.now();
     while (Date.now() - start < TAB_READY_TIMEOUT_MS) {
-      await new Promise((resolve) => setTimeout(resolve, 120));
+      await new Promise((resolve) => setTimeout(resolve, READY_POLL_INTERVAL_MS));
       const latestActive = this.activeTabId ? this.tabs.get(this.activeTabId) : null;
-      if (!latestActive) {
-        return null;
-      }
-
-      if (this.isTabReadyForFileRequests(latestActive)) {
-        return latestActive;
-      }
+      if (!latestActive) return null;
+      if (this.isTabReadyForFileRequests(latestActive)) return latestActive;
 
       if (latestActive.status === 'error' || latestActive.status === 'exited') {
-        if (latestActive.lastError?.startsWith('INVALID_MESSAGE:')) {
-          continue;
-        }
+        if (latestActive.lastError?.startsWith('INVALID_MESSAGE:')) continue;
         throw new Error(latestActive.lastError ?? `Active tab is ${latestActive.status}.`);
       }
     }
@@ -682,9 +509,9 @@ export class TerminalTabsManager {
   private isTabReadyForFileRequests(tab: ManagedTab): boolean {
     return Boolean(
       tab.relaySessionId &&
-      tab.status === 'live' &&
-      tab.socket &&
-      tab.socket.readyState === WebSocket.OPEN,
+        tab.status === 'live' &&
+        tab.socket &&
+        tab.socket.readyState === WebSocket.OPEN,
     );
   }
 
@@ -696,52 +523,9 @@ export class TerminalTabsManager {
       return Promise.reject(new Error('Socket is not connected.'));
     }
 
-    return new Promise<TResponse>((resolve, reject) => {
-      const timeout = setTimeout(() => {
-        tab.pendingFileRequests.delete(payload.requestId);
-        reject(new Error('File request timed out.'));
-      }, FILE_REQUEST_TIMEOUT_MS);
-
-      tab.pendingFileRequests.set(payload.requestId, {
-        timeout,
-        resolve: (value) => resolve(value as TResponse),
-        reject,
-      });
-
-      tab.socket?.send(JSON.stringify(payload));
-    });
-  }
-
-  private resolveFileRequest(tab: ManagedTab, requestId: string, value: unknown): boolean {
-    const pending = tab.pendingFileRequests.get(requestId);
-    if (!pending) {
-      return false;
-    }
-
-    clearTimeout(pending.timeout);
-    tab.pendingFileRequests.delete(requestId);
-    pending.resolve(value);
-    return true;
-  }
-
-  private rejectFileRequest(tab: ManagedTab, requestId: string, error: Error): boolean {
-    const pending = tab.pendingFileRequests.get(requestId);
-    if (!pending) {
-      return false;
-    }
-
-    clearTimeout(pending.timeout);
-    tab.pendingFileRequests.delete(requestId);
-    pending.reject(error);
-    return true;
-  }
-
-  private rejectAllPendingFileRequests(tab: ManagedTab, reason: string): void {
-    for (const [requestId, pending] of tab.pendingFileRequests) {
-      clearTimeout(pending.timeout);
-      pending.reject(new Error(reason));
-      tab.pendingFileRequests.delete(requestId);
-    }
+    const promise = trackFileRequest<TResponse>(tab, payload.requestId);
+    tab.socket.send(JSON.stringify(payload));
+    return promise;
   }
 
   private toPublicTab(tab: ManagedTab): TerminalTabState {
@@ -764,45 +548,20 @@ export class TerminalTabsManager {
 
   private emitTabsChanged(): void {
     this.revision += 1;
-    const event: ManagerEvent = {
-      type: 'tabs_changed',
-      snapshot: this.getSnapshot(),
-    };
-    for (const listener of this.listeners) {
-      listener(event);
-    }
+    const event: ManagerEvent = { type: 'tabs_changed', snapshot: this.getSnapshot() };
+    for (const listener of this.listeners) listener(event);
   }
 
   private emitActiveOutput(tabId: string, data: string): void {
-    if (this.activeTabId !== tabId) {
-      return;
-    }
-
-    const event: ManagerEvent = {
-      type: 'active_output',
-      tabId,
-      data,
-    };
-
-    for (const listener of this.listeners) {
-      listener(event);
-    }
+    if (this.activeTabId !== tabId) return;
+    const event: ManagerEvent = { type: 'active_output', tabId, data };
+    for (const listener of this.listeners) listener(event);
   }
 
   private emitActiveSnapshot(tabId: string, data: string): void {
-    if (this.activeTabId !== tabId) {
-      return;
-    }
-
-    const event: ManagerEvent = {
-      type: 'active_snapshot',
-      tabId,
-      data,
-    };
-
-    for (const listener of this.listeners) {
-      listener(event);
-    }
+    if (this.activeTabId !== tabId) return;
+    const event: ManagerEvent = { type: 'active_snapshot', tabId, data };
+    for (const listener of this.listeners) listener(event);
   }
 
   private connectTab(tab: ManagedTab, mode: 'create' | 'resume'): void {
@@ -813,24 +572,20 @@ export class TerminalTabsManager {
     tab.status = 'connecting';
     this.emitTabsChanged();
 
-    const socketUrl = mode === 'resume' && tab.relaySessionId
-      ? buildSessionAttachUrl(tab.connectionUrl, tab.relaySessionId)
-      : tab.connectionUrl;
+    const socketUrl =
+      mode === 'resume' && tab.relaySessionId
+        ? buildSessionAttachUrl(tab.connectionUrl, tab.relaySessionId)
+        : tab.connectionUrl;
 
     const socket = new WebSocket(socketUrl);
     tab.socket = socket;
 
     socket.onopen = () => {
-      if (tab.socket !== socket) {
-        return;
-      }
+      if (tab.socket !== socket) return;
 
       if (mode === 'resume' && tab.relaySessionId) {
         socket.send(
-          JSON.stringify({
-            type: 'resume_session',
-            sessionId: tab.relaySessionId,
-          }),
+          JSON.stringify({ type: 'resume_session', sessionId: tab.relaySessionId }),
         );
         return;
       }
@@ -845,28 +600,20 @@ export class TerminalTabsManager {
     };
 
     socket.onmessage = (event) => {
-      if (tab.socket !== socket) {
-        return;
-      }
-
+      if (tab.socket !== socket) return;
       const message = JSON.parse(event.data as string) as ServerMessage;
       this.handleServerMessage(tab, message);
     };
 
     socket.onerror = () => {
-      if (tab.socket !== socket) {
-        return;
-      }
-
+      if (tab.socket !== socket) return;
       tab.status = 'error';
       tab.lastError = 'WebSocket connection failed.';
       this.emitTabsChanged();
     };
 
     socket.onclose = () => {
-      if (tab.socket !== socket) {
-        return;
-      }
+      if (tab.socket !== socket) return;
 
       this.stopPing(tab);
       tab.socket = null;
@@ -892,41 +639,16 @@ export class TerminalTabsManager {
 
   private handleServerMessage(tab: ManagedTab, message: ServerMessage): void {
     if (message.type === 'session_created' || message.type === 'session_resumed') {
-      tab.relaySessionId = message.sessionId;
-      tab.projectId = message.projectId;
-      tab.projectName = message.projectName;
-      tab.title = message.projectName;
-      tab.status = 'live';
-      tab.lastError = null;
-      tab.exitState = null;
-      tab.cols = message.cols;
-      tab.rows = message.rows;
-      tab.lastActiveAt = tab.id === this.activeTabId ? nowIso() : tab.lastActiveAt;
-      if (message.persistence) {
-        tab.persistence = message.persistence;
-      }
-      this.startPing(tab);
-
-      if (tab.socket && tab.socket.readyState === WebSocket.OPEN) {
-        tab.socket.send(
-          JSON.stringify({
-            type: 'terminal_resize',
-            cols: tab.cols,
-            rows: tab.rows,
-          }),
-        );
-
-        if (tab.pendingPromotion && tab.persistence !== 'persisted') {
-          tab.socket.send(JSON.stringify({ type: 'promote_session' }));
-        }
-      }
-
-      this.emitTabsChanged();
+      this.applySessionState(tab, message);
       return;
     }
 
-    if (message.type === 'files_list' || message.type === 'file_content' || message.type === 'file_saved') {
-      this.resolveFileRequest(tab, message.requestId, message);
+    if (
+      message.type === 'files_list' ||
+      message.type === 'file_content' ||
+      message.type === 'file_saved'
+    ) {
+      resolveFileRequest(tab, message.requestId, message);
       return;
     }
 
@@ -954,7 +676,9 @@ export class TerminalTabsManager {
         signal: message.signal,
         message: statusText,
       };
-      tab.outputBuffer = trimOutput(tab.outputBuffer + `\r\n\x1b[90m[${statusText}]\x1b[0m\r\n`);
+      tab.outputBuffer = trimOutput(
+        tab.outputBuffer + `\r\n\x1b[90m[${statusText}]\x1b[0m\r\n`,
+      );
       tab.outputPreview = getPreview(tab.outputBuffer);
       this.emitActiveOutput(tab.id, `\r\n\x1b[90m[${statusText}]\x1b[0m\r\n`);
       this.emitTabsChanged();
@@ -969,55 +693,94 @@ export class TerminalTabsManager {
     }
 
     if (message.type === 'error') {
-      if (message.requestId) {
-        const matched = this.rejectFileRequest(tab, message.requestId, new Error(`${message.code}: ${message.message}`));
-        if (matched) {
-          return;
-        }
-      }
+      this.handleErrorMessage(tab, message);
+    }
+  }
 
-      if (tab.pendingFileRequests.size > 0) {
-        this.rejectAllPendingFileRequests(tab, `${message.code}: ${message.message}`);
-        // File-protocol failures should not poison the terminal session state.
-        if (message.code === 'INVALID_MESSAGE' || message.code === 'SESSION_NOT_FOUND') {
-          return;
-        }
-      }
+  private applySessionState(
+    tab: ManagedTab,
+    message: Extract<ServerMessage, { type: 'session_created' | 'session_resumed' }>,
+  ): void {
+    tab.relaySessionId = message.sessionId;
+    tab.projectId = message.projectId;
+    tab.projectName = message.projectName;
+    tab.title = message.projectName;
+    tab.status = 'live';
+    tab.lastError = null;
+    tab.exitState = null;
+    tab.cols = message.cols;
+    tab.rows = message.rows;
+    tab.lastActiveAt = tab.id === this.activeTabId ? nowIso() : tab.lastActiveAt;
+    if (message.persistence) tab.persistence = message.persistence;
 
-      if (message.code === 'INVALID_MESSAGE') {
-        tab.lastError = `${message.code}: ${message.message}`;
-        this.emitTabsChanged();
-        return;
-      }
+    this.startPing(tab);
 
-      tab.status = 'error';
-      tab.lastError = `${message.code}: ${message.message}`;
-      tab.outputBuffer = trimOutput(
-        `${tab.outputBuffer}\r\n\x1b[31m[${message.code}] ${message.message}\x1b[0m\r\n`,
+    if (tab.socket && tab.socket.readyState === WebSocket.OPEN) {
+      tab.socket.send(
+        JSON.stringify({ type: 'terminal_resize', cols: tab.cols, rows: tab.rows }),
       );
-      tab.outputPreview = getPreview(tab.outputBuffer);
-      this.emitActiveOutput(tab.id, `\r\n\x1b[31m[${message.code}] ${message.message}\x1b[0m\r\n`);
+
+      if (tab.pendingPromotion && tab.persistence !== 'persisted') {
+        tab.socket.send(JSON.stringify({ type: 'promote_session' }));
+      }
+    }
+
+    this.emitTabsChanged();
+  }
+
+  private handleErrorMessage(
+    tab: ManagedTab,
+    message: Extract<ServerMessage, { type: 'error' }>,
+  ): void {
+    if (message.requestId) {
+      const matched = rejectFileRequest(
+        tab,
+        message.requestId,
+        new Error(`${message.code}: ${message.message}`),
+      );
+      if (matched) return;
+    }
+
+    if (tab.pendingFileRequests.size > 0) {
+      rejectAllPendingFileRequests(tab, `${message.code}: ${message.message}`);
+      if (message.code === 'INVALID_MESSAGE' || message.code === 'SESSION_NOT_FOUND') return;
+    }
+
+    if (message.code === 'INVALID_MESSAGE') {
+      tab.lastError = `${message.code}: ${message.message}`;
       this.emitTabsChanged();
       return;
     }
+
+    tab.status = 'error';
+    tab.lastError = `${message.code}: ${message.message}`;
+    tab.outputBuffer = trimOutput(
+      `${tab.outputBuffer}\r\n\x1b[31m[${message.code}] ${message.message}\x1b[0m\r\n`,
+    );
+    tab.outputPreview = getPreview(tab.outputBuffer);
+    this.emitActiveOutput(
+      tab.id,
+      `\r\n\x1b[31m[${message.code}] ${message.message}\x1b[0m\r\n`,
+    );
+    this.emitTabsChanged();
   }
 
   private startPing(tab: ManagedTab): void {
     this.stopPing(tab);
     tab.pingInterval = setInterval(() => {
-      if (!tab.socket || tab.socket.readyState !== WebSocket.OPEN || !tab.relaySessionId) {
+      if (
+        !tab.socket ||
+        tab.socket.readyState !== WebSocket.OPEN ||
+        !tab.relaySessionId
+      ) {
         return;
       }
-
       tab.socket.send(JSON.stringify({ type: 'ping' }));
-    }, 20000);
+    }, PING_INTERVAL_MS);
   }
 
   private stopPing(tab: ManagedTab): void {
-    if (!tab.pingInterval) {
-      return;
-    }
-
+    if (!tab.pingInterval) return;
     clearInterval(tab.pingInterval);
     tab.pingInterval = null;
   }
@@ -1025,7 +788,7 @@ export class TerminalTabsManager {
   private shutdownSocket(tab: ManagedTab, intent: ManagedTab['disconnectIntent']): void {
     tab.disconnectIntent = intent;
     this.stopPing(tab);
-    this.rejectAllPendingFileRequests(tab, 'Socket closed before file request completed.');
+    rejectAllPendingFileRequests(tab, 'Socket closed before file request completed.');
     if (tab.socket) {
       tab.socket.close();
       tab.socket = null;
@@ -1033,9 +796,7 @@ export class TerminalTabsManager {
   }
 
   private requestKill(tab: ManagedTab): void {
-    if (!tab.relaySessionId) {
-      return;
-    }
+    if (!tab.relaySessionId) return;
 
     if (tab.socket && tab.socket.readyState === WebSocket.OPEN) {
       tab.socket.send(JSON.stringify({ type: 'kill_session' }));
@@ -1049,13 +810,16 @@ export class TerminalTabsManager {
         socket.close();
       };
     } catch {
-      // Ignore best-effort cleanup errors.
+      // best-effort cleanup
     }
   }
 
   private enforceWarmPool(): void {
     const liveTabs = Array.from(this.tabs.values())
-      .filter((tab) => tab.status === 'live' || tab.status === 'connecting' || tab.status === 'disconnected')
+      .filter(
+        (tab) =>
+          tab.status === 'live' || tab.status === 'connecting' || tab.status === 'disconnected',
+      )
       .sort((left, right) => Date.parse(right.lastActiveAt) - Date.parse(left.lastActiveAt));
 
     let budget = LIVE_TAB_POOL_SIZE;
@@ -1070,7 +834,11 @@ export class TerminalTabsManager {
         continue;
       }
 
-      if (tab.status === 'live' || tab.status === 'connecting' || tab.status === 'disconnected') {
+      if (
+        tab.status === 'live' ||
+        tab.status === 'connecting' ||
+        tab.status === 'disconnected'
+      ) {
         tab.status = 'parked';
         this.shutdownSocket(tab, 'parking');
       }
@@ -1079,5 +847,3 @@ export class TerminalTabsManager {
     this.emitTabsChanged();
   }
 }
-
-export const terminalTabsManager = new TerminalTabsManager();

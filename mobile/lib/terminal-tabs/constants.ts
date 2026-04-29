@@ -1,0 +1,10 @@
+export const TAB_OUTPUT_LIMIT = 200000;
+export const MAX_TAB_COUNT = 6;
+export const LIVE_TAB_POOL_SIZE = 3;
+export const PROJECT_LIST_TIMEOUT_MS = 5000;
+export const FILE_REQUEST_TIMEOUT_MS = 8000;
+export const TAB_READY_TIMEOUT_MS = 7000;
+export const PING_INTERVAL_MS = 20000;
+export const READY_POLL_INTERVAL_MS = 120;
+export const DEFAULT_TAB_COLS = 100;
+export const DEFAULT_TAB_ROWS = 28;
