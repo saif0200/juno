@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1"/>
-<title>Juno — the open-source control plane for coding agents</title>
+<title>Juno - the open-source control plane for coding agents</title>
 <link rel="preconnect" href="https://fonts.googleapis.com"/>
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin/>
 <link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital,wght@0,400;1,400&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet"/>
@@ -48,7 +48,7 @@ body { overflow-x: hidden; min-height: 100vh; }
 .bg-grain { position: fixed; inset: 0; z-index: -1; pointer-events: none; opacity: 0.06; mix-blend-mode: overlay;
   background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='200' height='200'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.9'/></filter><rect width='100%25' height='100%25' filter='url(%23n)'/></svg>"); }
 
-/* nav — terminal prompt bar */
+/* nav - terminal prompt bar */
 .nav { position: sticky; top: 14px; z-index: 40; margin: 14px auto 0; max-width: 920px; display: flex; align-items: center; gap: 0;
   padding: 10px 14px 10px 16px; border-radius: 12px;
   background: rgba(16,16,20,0.75); border: 1px solid rgba(255,255,255,0.08);
@@ -91,7 +91,7 @@ body { overflow-x: hidden; min-height: 100vh; }
 /* hero */
 .hero { position: relative; padding: 60px 24px 0; max-width: 1080px; margin: 0 auto; display: flex; flex-direction: column; align-items: center; text-align: center; }
 
-/* hero device composition — remote access moment, sits below the text */
+/* hero device composition - remote access moment, sits below the text */
 .hero-stage { position: relative; width: 100vw; margin-left: calc(50% - 50vw); margin-right: calc(50% - 50vw); margin-top: -40px; max-width: none; pointer-events: none; overflow: hidden; height: clamp(480px, 47.5vw, 740px); flex: 0 0 auto; align-self: stretch; -webkit-mask-image: linear-gradient(to bottom, black 0%, black 95%, transparent 100%); mask-image: linear-gradient(to bottom, black 0%, black 95%, transparent 100%); }
 .hero-stage::after { display: none; }
 /* shared mac layer base */
@@ -232,7 +232,7 @@ body { overflow-x: hidden; min-height: 100vh; }
 .pair-code { text-align: center; font-family: 'JetBrains Mono'; font-size: 11px; color: var(--muted-2); }
 .pair-code b { color: #fff; font-weight: 400; letter-spacing: 0.08em; }
 
-/* commands dock — interactive */
+/* commands dock - interactive */
 .cmd-dock { max-width: 860px; margin: 0 auto; background: #07070a; border: 1px solid var(--line-2); border-radius: 16px; overflow: hidden; box-shadow: 0 30px 70px -20px rgba(0,0,0,0.8); }
 .cmd-dock-head { display: flex; align-items: center; padding: 0; border-bottom: 1px solid var(--line); background: rgba(255,255,255,0.015); }
 .cmd-tab { padding: 14px 22px; font-family: 'JetBrains Mono'; font-size: 12px; color: var(--muted); background: none; border: none; cursor: pointer; border-bottom: 2px solid transparent; margin-bottom: -1px; transition: color .15s; font-family: 'JetBrains Mono', monospace; }
@@ -455,9 +455,9 @@ const HEADLINES = {
   'variant-c': { a: 'Your terminal', b: 'follows', mid: 'you now.', c: '' },
 };
 
-// Supported agents — using real product names in text (standard integration disclosure for an OSS tool).
+// Supported agents - using real product names in text (standard integration disclosure for an OSS tool).
 // Icons are abstract glyphs in each product's brand color, not copies of their logos.
-// Real favicons pulled live from each product's domain via Google's favicon proxy — always fresh, always accurate.
+// Real favicons pulled live from each product's domain via Google's favicon proxy - always fresh, always accurate.
 const favicon = (domain, size=128) => `https://www.google.com/s2/favicons?domain=${domain}&sz=${size}`;
 
 const AGENTS = [
@@ -615,7 +615,7 @@ function Manifesto() {
 
           <hr/>
           <p className="comment">
-            <span style={{color:'#d97757'}}>[</span>0.4.2<span style={{color:'#d97757'}}>]</span> — shipped last tuesday · 1,284 commits · 38 contributors · no investors · no bullshit
+            <span style={{color:'#d97757'}}>[</span>0.4.2<span style={{color:'#d97757'}}>]</span> - shipped last tuesday · 1,284 commits · 38 contributors · no investors · no bullshit
           </p>
         </div>
       </div>
@@ -843,7 +843,7 @@ function PhoneSection({ tab, setTab }) {
     <section className="section" id="workflow">
       <div className="eyebrow">the pocket remote</div>
       <h2 className="serif section-title">Ship from the G train.<br/><em>Fix CI from brunch.</em></h2>
-      <p className="section-lede">Every token, every tool call, every approval prompt — streamed to your phone in real time. Queue follow-ups, nudge the plan, kill it all from a park bench. Your call.</p>
+      <p className="section-lede">Every token, every tool call, every approval prompt - streamed to your phone in real time. Queue follow-ups, nudge the plan, kill it all from a park bench. Your call.</p>
       <div className="phone-row">
         <Phone tab={tab} setTab={setTab}/>
         <div className="phone-copy">
@@ -851,7 +851,7 @@ function PhoneSection({ tab, setTab }) {
           <p>Juno mirrors your local agents over an encrypted tunnel. No cloud middleman. No re-keying. Your real subscription, piped directly to your pocket.</p>
           <ul>
             <li>Sub-200ms streaming on LTE (measured, not vibes)</li>
-            <li>Face ID approvals — no more "Y/n" regrets</li>
+            <li>Face ID approvals - no more "Y/n" regrets</li>
             <li>Queue 20 prompts while you're on the subway</li>
             <li>CI breaks at dinner? Fix it between courses.</li>
             <li>MIT-licensed. Self-host the whole thing. Go wild.</li>
@@ -867,7 +867,7 @@ function AgentsSection() {
     <section className="section" id="agents">
       <div className="eyebrow">the gang's all here</div>
       <h2 className="serif section-title">Bring your own agent.<br/><em>All of them, actually.</em></h2>
-      <p className="section-lede">We don't replace your agent — we remote-control it. Your keys, your rate limits, your receipts. We just handle the boring orchestration part.</p>
+      <p className="section-lede">We don't replace your agent - we remote-control it. Your keys, your rate limits, your receipts. We just handle the boring orchestration part.</p>
       <div className="agents-grid">
         {AGENTS.map(a => (
           <div key={a.key} className="agent-card">
@@ -915,7 +915,7 @@ function PairSection() {
         <div className="pair-term">
           <div className="pair-term-head">
             <div className="dots"><i style={{background:'#ff5f57'}}/><i style={{background:'#febc2e'}}/><i style={{background:'#28c840'}}/></div>
-            <span>~/project — zsh</span>
+            <span>~/project - zsh</span>
           </div>
           <div className="pair-term-body">
             <div><span style={{color:'#8ba6ff'}}>➜</span> <span style={{color:'var(--muted)'}}>~/project</span> <span style={{color:'#fff'}}>juno pair</span></div>
@@ -937,7 +937,7 @@ function PairSection() {
           <div className="steps">
             <div className="step"><span className="n">01</span><span><b style={{color:'#fff', fontWeight:500}}>brew install juno</b> on your machine.</span></div>
             <div className="step"><span className="n">02</span><span>Open the app and scan the QR.</span></div>
-            <div className="step"><span className="n">03</span><span>Start any agent — Juno picks it up automatically.</span></div>
+            <div className="step"><span className="n">03</span><span>Start any agent - Juno picks it up automatically.</span></div>
           </div>
         </div>
       </div>
