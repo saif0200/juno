@@ -1,6 +1,6 @@
 import WebSocket from 'ws';
 
-import { CLAUDE_ARGS, CLAUDE_COMMAND, TMUX_AVAILABLE, TMUX_BINARY } from '../config';
+import { DEFAULT_AI_COMMAND, TMUX_AVAILABLE, TMUX_BINARY } from '../config';
 import { directoryExists } from '../fs-paths';
 import { createTerminalExitMessage, sendError, sendMessage } from '../protocol';
 import {
@@ -69,7 +69,10 @@ export function handleCreateSession(
     return null;
   }
 
-  const sharedTmuxSessionName = TMUX_AVAILABLE ? buildSharedTmuxSessionName(project.id) : null;
+  const requestedCommand = (message.command ?? DEFAULT_AI_COMMAND).toLowerCase();
+  const sharedTmuxSessionName = TMUX_AVAILABLE
+    ? buildSharedTmuxSessionName(project.id, requestedCommand)
+    : null;
   if (sharedTmuxSessionName) {
     const reusableSession = Array.from(sessions.values()).find(
       (candidate) =>
@@ -106,13 +109,19 @@ export function handleCreateSession(
     }
   }
 
-  const createOptions: { clientTabId?: string; persistence?: TerminalPersistenceMode } = {};
+  const createOptions: {
+    clientTabId?: string;
+    persistence?: TerminalPersistenceMode;
+    command?: string;
+  } = { command: requestedCommand };
   if (message.clientTabId) createOptions.clientTabId = message.clientTabId;
   if (message.persistence) createOptions.persistence = message.persistence;
 
   const session = createSession(project, createOptions);
   attachSocket(session, socket);
-  console.log(`✅ New project session created: ${session.id} (${project.name})`);
+  console.log(
+    `✅ New project session created: ${session.id} (${project.name}, ${session.command})`,
+  );
 
   const payload: SessionCreatedMessage = {
     type: 'session_created',
@@ -127,7 +136,7 @@ export function handleCreateSession(
     command:
       session.backend === 'tmux' && session.sharedSessionName
         ? `${TMUX_BINARY} attach-session -t ${session.sharedSessionName}`
-        : [CLAUDE_COMMAND, ...CLAUDE_ARGS].join(' ').trim(),
+        : session.command,
     persistence: session.persistence,
     backend: session.backend,
     ...(session.sharedSessionName ? { sharedSessionName: session.sharedSessionName } : {}),

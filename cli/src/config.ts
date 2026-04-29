@@ -54,7 +54,7 @@ function parsePublicUrl(raw: string | undefined): string | null {
   }
 }
 
-export const PORT = Number.parseInt(process.env.PORT ?? '3000', 10);
+export const PORT = Number.parseInt(process.env.PORT ?? '7878', 10);
 export const SESSION_TTL_MS = Number.parseInt(process.env.SESSION_TTL_MS ?? '300000', 10);
 export const CLEANUP_INTERVAL_MS = Number.parseInt(
   process.env.SESSION_CLEANUP_INTERVAL_MS ?? '30000',
@@ -69,6 +69,26 @@ export const MAX_FILE_WRITE_BYTES = Number.parseInt(process.env.MAX_FILE_WRITE_B
 export const SHELL = process.env.SHELL ?? '/bin/zsh';
 export const CLAUDE_COMMAND = resolveClaudeCommand(process.env.CLAUDE_COMMAND ?? 'claude');
 export const CLAUDE_ARGS = parseJsonStringArray(process.env.CLAUDE_ARGS_JSON, 'CLAUDE_ARGS_JSON');
+
+/**
+ * Registry of AI runner keys the phone may request via the create_session
+ * `command` field. Each entry is what gets executed inside the project's
+ * shell. Resolution is best-effort — if the binary isn't on PATH the spawn
+ * still happens and the user sees a "command not found" inside the terminal.
+ */
+export const AI_COMMAND_REGISTRY: Record<string, { binary: string; args: string[] }> = {
+  claude: { binary: CLAUDE_COMMAND, args: CLAUDE_ARGS },
+  codex: { binary: process.env.CODEX_COMMAND ?? 'codex', args: [] },
+  opencode: { binary: process.env.OPENCODE_COMMAND ?? 'opencode', args: [] },
+  shell: { binary: SHELL, args: ['-il'] },
+};
+
+export const DEFAULT_AI_COMMAND = process.env.DEFAULT_AI_COMMAND ?? 'claude';
+
+export function resolveAiCommand(key: string | undefined): { binary: string; args: string[] } {
+  const requested = (key ?? DEFAULT_AI_COMMAND).toLowerCase();
+  return AI_COMMAND_REGISTRY[requested] ?? AI_COMMAND_REGISTRY[DEFAULT_AI_COMMAND] ?? AI_COMMAND_REGISTRY.claude!;
+}
 
 export const TMUX_COMMAND = process.env.TMUX_COMMAND?.trim() || 'tmux';
 export const TMUX_SESSION_BRIDGE_ENABLED = parseBooleanEnv(
@@ -87,16 +107,30 @@ if (TMUX_SESSION_BRIDGE_ENABLED && !TMUX_AVAILABLE) {
 
 export const PROJECT_DISCOVERY_ENABLED = parseBooleanEnv(
   process.env.PROJECT_DISCOVERY_ENABLED,
-  false,
+  true,
 );
 export const PROJECT_DISCOVERY_MAX_DEPTH = Number.parseInt(
   process.env.PROJECT_DISCOVERY_MAX_DEPTH ?? '2',
   10,
 );
-export const PROJECT_DISCOVERY_PATHS = parseJsonStringArray(
+
+const DEFAULT_DISCOVERY_PATHS = [
+  '~/Desktop',
+  '~/code',
+  '~/Code',
+  '~/dev',
+  '~/Dev',
+  '~/projects',
+  '~/Projects',
+  '~/Documents/GitHub',
+  '~/Documents/code',
+];
+const explicitDiscoveryPaths = parseJsonStringArray(
   process.env.PROJECT_DISCOVERY_PATHS_JSON,
   'PROJECT_DISCOVERY_PATHS_JSON',
 );
+export const PROJECT_DISCOVERY_PATHS =
+  explicitDiscoveryPaths.length > 0 ? explicitDiscoveryPaths : DEFAULT_DISCOVERY_PATHS;
 
 export const SERVER_NAME =
   (process.env.PAIRING_SERVER_NAME ?? os.hostname()).trim() || os.hostname();

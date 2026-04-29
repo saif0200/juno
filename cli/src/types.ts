@@ -100,6 +100,8 @@ export interface CreateSessionMessage {
   projectId: string;
   clientTabId?: string;
   persistence?: TerminalPersistenceMode;
+  /** AI runner key the user picked: 'claude' | 'codex' | 'opencode' | 'shell' | custom. */
+  command?: string;
 }
 
 export interface TerminalInputMessage {
@@ -149,6 +151,18 @@ export interface PromoteSessionMessage {
   type: 'promote_session';
 }
 
+export interface RemoveProjectMessage {
+  type: 'remove_project';
+  requestId: string;
+  projectId: string;
+}
+
+export interface ProjectRemovedMessage {
+  type: 'project_removed';
+  requestId: string;
+  projectId: string;
+}
+
 export type ClientMessage =
   | ListProjectsMessage
   | ListSessionsMessage
@@ -161,7 +175,8 @@ export type ClientMessage =
   | WriteFileMessage
   | PingMessage
   | KillSessionMessage
-  | PromoteSessionMessage;
+  | PromoteSessionMessage
+  | RemoveProjectMessage;
 
 export interface WorkspaceFileEntry {
   name: string;
@@ -316,6 +331,7 @@ export type ServerMessage =
   | TerminalSnapshotMessage
   | TerminalExitMessage
   | SessionPromotedMessage
+  | ProjectRemovedMessage
   | PongMessage
   | ErrorMessage;
 
@@ -340,4 +356,6 @@ export interface SessionRecord {
   persistence: TerminalPersistenceMode;
   backend: TerminalBackend;
   sharedSessionName: string | null;
+  /** Resolved AI runner the PTY actually executes (resolved from CreateSessionMessage.command). */
+  command: string;
 }
