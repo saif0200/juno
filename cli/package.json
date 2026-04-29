@@ -1,15 +1,26 @@
 {
-  "name": "zev-relay",
-  "version": "1.0.0",
-  "description": "Local Claude Code relay server for the Juno mobile app",
+  "name": "@juno-dev/cli",
+  "version": "0.1.0",
+  "description": "Local relay CLI for the Juno mobile IDE app.",
+  "license": "MIT",
   "engines": {
     "node": ">=20.0.0"
   },
+  "bin": {
+    "juno": "./bin/juno.js"
+  },
+  "main": "dist/cli.js",
+  "files": [
+    "bin",
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
   "scripts": {
     "dev": "node scripts/start-with-ngrok.js",
-    "dev:notunnel": "ts-node src/index.ts",
+    "dev:notunnel": "ts-node src/cli.ts pair",
     "build": "tsc -p tsconfig.json",
-    "start": "node dist/index.js",
+    "start": "node bin/juno.js",
     "prepare": "npm run build",
     "test:client": "node scripts/test-client.js"
   },

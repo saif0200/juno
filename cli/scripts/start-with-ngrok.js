@@ -83,7 +83,7 @@ function findCloudflared() {
 }
 
 function spawnServer(env) {
-  serverProc = spawn(TS_NODE, ['src/index.ts'], {
+  serverProc = spawn(TS_NODE, ['src/cli.ts', 'pair'], {
     cwd: SERVER_DIR,
     env,
     stdio: 'inherit',
@@ -116,7 +116,7 @@ function startNgrok(bin) {
     tunnelProc = spawn(bin, args, { stdio: ['ignore', 'pipe', 'inherit'] });
 
     const timer = setTimeout(() => {
-      console.warn('[ngrok] timed out — trying cloudflared...');
+      console.warn('[ngrok] timed out - trying cloudflared...');
       tunnelProc.kill('SIGTERM');
       tunnelProc = null;
       resolve(null);
@@ -143,7 +143,7 @@ function startNgrok(bin) {
 
     tunnelProc.on('exit', (code) => {
       clearTimeout(timer);
-      if (code !== 0) console.warn(`[ngrok] exited with code ${code} — trying cloudflared...`);
+      if (code !== 0) console.warn(`[ngrok] exited with code ${code} - trying cloudflared...`);
       tunnelProc = null;
       resolve(null);
     });
@@ -186,7 +186,7 @@ function startCloudflared(bin) {
 
 async function main() {
   if (!NGROK_ENABLED) {
-    console.log('ℹ️  NGROK_ENABLED=false — starting without tunnel');
+    console.log('ℹ️  NGROK_ENABLED=false - starting without tunnel');
     spawnServer(process.env);
     return;
   }
@@ -223,7 +223,7 @@ async function main() {
     }
   }
 
-  console.warn('⚠️  No tunnel available — starting LAN only');
+  console.warn('⚠️  No tunnel available - starting LAN only');
   spawnServer(process.env);
 }
 
