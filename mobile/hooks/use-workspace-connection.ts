@@ -2,8 +2,8 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 
 import {
   consumePendingDeviceId,
+  dedupeSavedDevices,
   deleteSavedDevice,
-  loadSavedDevices,
   markSavedDeviceUsed,
   type SavedDevice,
 } from '@/lib/devices';
@@ -26,6 +26,7 @@ export interface UseWorkspaceConnection {
   disconnect: () => void;
   forgetDevice: (deviceId: string) => Promise<void>;
   refreshDevices: () => Promise<void>;
+  removeProject: (projectId: string) => void;
 }
 
 export function useWorkspaceConnection(): UseWorkspaceConnection {
@@ -104,6 +105,10 @@ export function useWorkspaceConnection(): UseWorkspaceConnection {
           setSessions(message.sessions);
           return;
         }
+        if (message.type === 'project_removed') {
+          setProjects((prev) => prev.filter((p) => p.id !== message.projectId));
+          return;
+        }
         if (message.type === 'error') {
           setStatus('error');
           setLastError(`${message.code}: ${message.message}`);
@@ -113,7 +118,9 @@ export function useWorkspaceConnection(): UseWorkspaceConnection {
       socket.onerror = () => {
         if (socketRef.current !== socket) return;
         setStatus('error');
-        setLastError('Connection failed.');
+        setLastError(
+          `Could not reach ${device.name}. Make sure 'juno pair' is running on your laptop and that your phone can reach ${device.wsUrl}.`,
+        );
       };
 
       socket.onclose = () => {
@@ -140,9 +147,24 @@ export function useWorkspaceConnection(): UseWorkspaceConnection {
     [disconnect],
   );
 
+  const removeProject = useCallback((projectId: string): void => {
+    const socket = socketRef.current;
+    if (!socket || socket.readyState !== WebSocket.OPEN) {
+      setLastError('Not connected to relay. Connect to remove a project.');
+      return;
+    }
+    socket.send(
+      JSON.stringify({
+        type: 'remove_project',
+        requestId: `req-${Date.now()}`,
+        projectId,
+      }),
+    );
+  }, []);
+
   refreshRef.current = async function refreshDevices(): Promise<void> {
     const [devices, pendingDeviceId] = await Promise.all([
-      loadSavedDevices(),
+      dedupeSavedDevices(),
       consumePendingDeviceId(),
     ]);
     setSavedDevices(devices);
@@ -177,5 +199,6 @@ export function useWorkspaceConnection(): UseWorkspaceConnection {
     disconnect,
     forgetDevice,
     refreshDevices,
+    removeProject,
   };
 }

@@ -57,10 +57,25 @@ export async function loadSavedDevices(): Promise<SavedDevice[]> {
   }
 }
 
+function normalizeWsUrl(value: string): string {
+  try {
+    const url = new URL(value);
+    return `${url.protocol}//${url.host}`;
+  } catch {
+    return value.trim().toLowerCase();
+  }
+}
+
 export async function upsertSavedDevice(input: SavedDeviceInput): Promise<SavedDevice> {
   const devices = await loadSavedDevices();
   const now = new Date().toISOString();
-  const existing = input.id ? devices.find((device) => device.id === input.id) : undefined;
+  const targetWs = normalizeWsUrl(input.wsUrl);
+
+  // Dedupe order: explicit id match first, otherwise normalized wsUrl match.
+  const existing =
+    (input.id ? devices.find((device) => device.id === input.id) : undefined) ??
+    devices.find((device) => normalizeWsUrl(device.wsUrl) === targetWs);
+
   const savedDevice: SavedDevice = {
     id: existing?.id ?? input.id ?? createDeviceId(),
     name: input.name,
@@ -80,6 +95,32 @@ export async function upsertSavedDevice(input: SavedDeviceInput): Promise<SavedD
 
   await writeDevices(nextDevices);
   return savedDevice;
+}
+
+/**
+ * One-time cleanup: collapse any pre-existing duplicates by normalized wsUrl,
+ * keeping the entry with the newest updatedAt. Returns the cleaned list.
+ */
+export async function dedupeSavedDevices(): Promise<SavedDevice[]> {
+  const devices = await loadSavedDevices();
+  const byWs = new Map<string, SavedDevice>();
+  for (const device of devices) {
+    const key = normalizeWsUrl(device.wsUrl);
+    const current = byWs.get(key);
+    if (!current) {
+      byWs.set(key, device);
+      continue;
+    }
+    const newest =
+      (device.updatedAt ?? '') > (current.updatedAt ?? '') ? device : current;
+    byWs.set(key, newest);
+  }
+
+  const next = Array.from(byWs.values());
+  if (next.length !== devices.length) {
+    await writeDevices(next);
+  }
+  return next;
 }
 
 export async function deleteSavedDevice(deviceId: string): Promise<void> {
