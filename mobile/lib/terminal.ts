@@ -26,11 +26,14 @@ export type SessionSummary = {
 export type TerminalPersistenceMode = 'ephemeral' | 'persisted';
 export type TerminalBackend = 'pty' | 'tmux';
 
+export type AiCommandKey = 'claude' | 'codex' | 'opencode' | 'shell';
+
 export type CreateSessionRequest = {
   type: 'create_session';
   projectId: string;
   clientTabId?: string;
   persistence?: TerminalPersistenceMode;
+  command?: AiCommandKey | string;
 };
 
 export type WorkspaceFileEntry = {
@@ -128,6 +131,11 @@ export type ServerMessage =
       expiresAt: string;
     }
   | {
+      type: 'project_removed';
+      requestId: string;
+      projectId: string;
+    }
+  | {
       type: 'error';
       code: string;
       message: string;
@@ -138,7 +146,8 @@ export type TerminalBridgeMessage =
   | { type: 'terminal_ready' }
   | { type: 'terminal_runtime_error'; message: string }
   | { type: 'terminal_input'; data: string }
-  | { type: 'terminal_resize'; cols: number; rows: number };
+  | { type: 'terminal_resize'; cols: number; rows: number }
+  | { type: 'terminal_user_scroll' };
 
 const XTERM_JS = require('../assets/terminal/xterm.bundle.txt');
 const XTERM_CSS = require('../assets/terminal/xterm.css.txt');
@@ -183,7 +192,7 @@ function buildTerminalHtml(xtermCss: string, xtermJs: string, fitAddonJs: string
         position: fixed;
         inset: 0;
         overscroll-behavior: none;
-        touch-action: manipulation;
+        touch-action: pan-y;
       }
       #terminal {
         flex: 1 1 auto;
@@ -192,6 +201,7 @@ function buildTerminalHtml(xtermCss: string, xtermJs: string, fitAddonJs: string
         box-sizing: border-box;
         background: #020617;
         overflow: hidden;
+        touch-action: pan-y;
       }
       .xterm {
         height: 100%;
@@ -204,6 +214,8 @@ function buildTerminalHtml(xtermCss: string, xtermJs: string, fitAddonJs: string
       .xterm-viewport {
         overflow-y: auto !important;
         overscroll-behavior: contain;
+        touch-action: pan-y;
+        -webkit-overflow-scrolling: touch;
         scrollbar-width: none;
         -ms-overflow-style: none;
       }
@@ -338,6 +350,31 @@ function buildTerminalHtml(xtermCss: string, xtermJs: string, fitAddonJs: string
       if (window.visualViewport) {
         window.visualViewport.addEventListener('resize', scheduleResize);
       }
+
+      // Touch-drag detection: notify the host so it can dismiss the soft keyboard
+      // the moment the user starts scrolling the terminal viewport.
+      let dragStartY = null;
+      let dragNotified = false;
+      const DRAG_THRESHOLD_PX = 18;
+      document.addEventListener('touchstart', (event) => {
+        if (event.touches && event.touches.length === 1) {
+          dragStartY = event.touches[0].clientY;
+          dragNotified = false;
+        } else {
+          dragStartY = null;
+        }
+      }, { passive: true });
+      document.addEventListener('touchmove', (event) => {
+        if (dragStartY === null || dragNotified || !event.touches || event.touches.length !== 1) return;
+        const delta = Math.abs(event.touches[0].clientY - dragStartY);
+        if (delta >= DRAG_THRESHOLD_PX) {
+          dragNotified = true;
+          postMessage({ type: 'terminal_user_scroll' });
+        }
+      }, { passive: true });
+      document.addEventListener('touchend', () => {
+        dragStartY = null;
+      }, { passive: true });
       ['touchstart', 'touchend', 'click'].forEach((eventName) => {
         document.addEventListener(eventName, focusTerminal, { passive: true });
       });

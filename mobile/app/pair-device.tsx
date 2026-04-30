@@ -39,11 +39,19 @@ export default function PairDeviceScreen() {
         source: 'qr',
       });
       await setPendingDeviceId(device.id);
-      router.back();
+      goBackToWorkspace();
     } catch (error) {
       setErrorMessage(error instanceof Error ? error.message : 'Could not parse QR code.');
       setIsHandlingScan(false);
     }
+  }
+
+  function goBackToWorkspace(): void {
+    if (router.canGoBack()) {
+      router.back();
+      return;
+    }
+    router.replace('/');
   }
 
   const scannerEnabled = Boolean(permission?.granted) && !isHandlingScan;
@@ -52,7 +60,7 @@ export default function PairDeviceScreen() {
     <SafeAreaView style={styles.root}>
       {/* Header */}
       <View style={styles.header}>
-        <Pressable onPress={() => router.back()} style={styles.backBtn}>
+        <Pressable onPress={goBackToWorkspace} style={styles.backBtn}>
           <Text style={styles.backText}>← back</Text>
         </Pressable>
         <Text style={styles.headerTitle}>pair device</Text>
@@ -89,7 +97,7 @@ export default function PairDeviceScreen() {
         {/* Footer */}
         <View style={styles.footer}>
           <Text style={styles.footerHint}>
-            Scan the QR code shown by <Text style={{ color: C.text }}>npm run dev</Text> in the relay server.
+            Scan the QR code printed by <Text style={{ color: C.text }}>juno pair</Text> in your project.
           </Text>
 
           {errorMessage ? (

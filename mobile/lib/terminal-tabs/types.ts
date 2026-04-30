@@ -29,6 +29,7 @@ export type TerminalTabState = {
   lastError: string | null;
   outputPreview: string;
   exitState: TerminalExitState | null;
+  command: string;
 };
 
 export type ManagedTab = TerminalTabState & {
@@ -66,6 +67,7 @@ export type OpenProjectTabInput = {
   projectName: string;
   connectionUrl: string;
   persistence?: TerminalPersistenceMode;
+  command?: string;
 };
 
 export type OpenExistingSessionInput = {

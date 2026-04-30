@@ -83,6 +83,13 @@ export const workspaceStyles = StyleSheet.create({
     fontWeight: '500',
   },
   deviceMeta: { color: C.muted, fontFamily: Fonts.sans, fontSize: 11 },
+  deviceState: {
+    fontFamily: Fonts.sans,
+    fontSize: 10,
+    fontWeight: '600',
+    letterSpacing: 0.5,
+    textTransform: 'uppercase',
+  },
   deviceUrl: { color: C.muted, fontFamily: Fonts.mono, fontSize: 11, paddingLeft: 14 },
   deviceActions: { alignItems: 'center', flexDirection: 'row', gap: 12, paddingLeft: 14 },
   actionChip: {

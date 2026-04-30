@@ -112,6 +112,7 @@ export class TerminalTabsManager {
       connectionUrl: input.connectionUrl,
       persistence: input.persistence ?? 'persisted',
       relaySessionId: null,
+      command: input.command,
     });
     this.connectTab(tab, 'create');
     this.enforceWarmPool();
@@ -436,6 +437,7 @@ export class TerminalTabsManager {
     connectionUrl: string;
     persistence: ManagedTab['persistence'];
     relaySessionId: string | null;
+    command?: string;
   }): ManagedTab {
     const id = createTabId();
     const createdAt = nowIso();
@@ -453,6 +455,7 @@ export class TerminalTabsManager {
       lastError: null,
       outputPreview: '',
       exitState: null,
+      command: (input.command ?? 'claude').toLowerCase(),
       outputBuffer: '',
       socket: null,
       pingInterval: null,
@@ -543,6 +546,7 @@ export class TerminalTabsManager {
       lastError: tab.lastError,
       outputPreview: tab.outputPreview,
       exitState: tab.exitState,
+      command: tab.command,
     };
   }
 
@@ -595,6 +599,7 @@ export class TerminalTabsManager {
         projectId: tab.projectId,
         clientTabId: tab.id,
         persistence: tab.persistence,
+        command: tab.command,
       };
       socket.send(JSON.stringify(createPayload));
     };

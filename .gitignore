@@ -20,3 +20,10 @@ yarn-error.*
 .claude/
 .vscode/
 .idea/
+
+# juno runtime state (pid, projects, etc) - lives in ~/.juno but ignore here defensively
+.juno/
+daemon.pid
+
+# user-local cli config
+cli/projects.json

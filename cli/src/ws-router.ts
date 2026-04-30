@@ -2,6 +2,7 @@ import type { Request } from 'express';
 import WebSocket, { type WebSocketServer } from 'ws';
 
 import { PORT } from './config';
+import { handleRemoveProject } from './handlers/admin';
 import { handleListFiles, handleReadFile, handleWriteFile } from './handlers/files';
 import { handleListProjects } from './handlers/projects';
 import {
@@ -74,6 +75,11 @@ export function bindWebSocketServer(wss: WebSocketServer): void {
 
         if (message.type === 'resume_session') {
           handleResumeSession(socket, message);
+          return;
+        }
+
+        if (message.type === 'remove_project') {
+          handleRemoveProject(socket, message);
           return;
         }
 

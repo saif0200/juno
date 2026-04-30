@@ -66,6 +66,10 @@ export function parseMessage(raw: WebSocket.RawData): ClientMessage | null {
       candidate.persistence === 'persisted' || candidate.persistence === 'ephemeral'
         ? candidate.persistence
         : undefined;
+    const command =
+      typeof candidate.command === 'string' && candidate.command.trim().length > 0
+        ? candidate.command.trim().toLowerCase()
+        : undefined;
 
     const payload: CreateSessionMessage = {
       type: 'create_session',
@@ -73,6 +77,7 @@ export function parseMessage(raw: WebSocket.RawData): ClientMessage | null {
     };
     if (clientTabId) payload.clientTabId = clientTabId;
     if (persistence) payload.persistence = persistence;
+    if (command) payload.command = command;
     return payload;
   }
 
@@ -140,6 +145,20 @@ export function parseMessage(raw: WebSocket.RawData): ClientMessage | null {
   if (candidate.type === 'ping') return { type: 'ping' };
   if (candidate.type === 'kill_session') return { type: 'kill_session' };
   if (candidate.type === 'promote_session') return { type: 'promote_session' };
+
+  if (
+    candidate.type === 'remove_project' &&
+    typeof candidate.requestId === 'string' &&
+    candidate.requestId.trim().length > 0 &&
+    typeof candidate.projectId === 'string' &&
+    candidate.projectId.trim().length > 0
+  ) {
+    return {
+      type: 'remove_project',
+      requestId: candidate.requestId,
+      projectId: candidate.projectId,
+    };
+  }
 
   return null;
 }

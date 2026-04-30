@@ -22,7 +22,7 @@ Mobile (run from `mobile/`):
 
 CLI (run from `cli/`):
 
-- `npm run dev` - start `juno pair` via ts-node with tunnel fallback (ngrok → cloudflared → LAN-only).
+- `npm run dev` - start `juno pair` via ts-node with tunnel fallback (cloudflared → ngrok → LAN-only). Override order with `TUNNEL_PREFER=ngrok`.
 - `npm run dev:notunnel` - LAN-only mode.
 - `npm run build` - compile to `cli/dist/`.
 - `npm run test:client` - manual smoke client.
@@ -31,7 +31,8 @@ CLI (run from `cli/`):
 
 From the repo root:
 
-- `make install` - install everything and link `juno` globally via `npm link`.
+- `make install` - install system tools (cloudflared, tmux) for the current OS, install cli + mobile npm deps, build cli, and link `juno` globally via `npm link`.
+- `make install-deps` - install only the system tools (cloudflared, tmux). Detects macOS / apt / dnf / pacman; prints WSL guidance on Windows.
 - `make dev` - run `cli` and `mobile` dev servers in parallel.
 - `make build` / `make lint` / `make clean` - aggregate targets.
 

@@ -1,11 +1,12 @@
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
 import { useFocusEffect, useRouter } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
-import { useCallback, useMemo } from 'react';
-import { Pressable, ScrollView, Text, View } from 'react-native';
+import { useCallback, useMemo, useState } from 'react';
+import { Alert, Pressable, ScrollView, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { StatusDot } from '@/components/status-dot';
+import { CommandPicker, type AiCommandKey } from '@/components/workspace/command-picker';
 import { DeviceRow } from '@/components/workspace/device-row';
 import { ProjectRow } from '@/components/workspace/project-row';
 import { SessionRow } from '@/components/workspace/session-row';
@@ -45,6 +46,7 @@ export default function WorkspaceScreen() {
     disconnect,
     forgetDevice,
     refreshDevices,
+    removeProject,
   } = connection;
 
   useFocusEffect(
@@ -61,17 +63,40 @@ export default function WorkspaceScreen() {
     [sessions],
   );
 
-  function openNewSession(project: ProjectDefinition): void {
+  const [pickerProject, setPickerProject] = useState<ProjectDefinition | null>(null);
+
+  function requestProjectOpen(project: ProjectDefinition): void {
+    if (!selectedDevice) return;
+    setPickerProject(project);
+  }
+
+  function confirmRemoveProject(project: ProjectDefinition): void {
+    Alert.alert(
+      'Remove project',
+      `Remove "${project.name}" from this relay?\n\nThis updates ~/.juno/projects.json on your laptop. Live shells stay open until you close their tabs.`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Remove',
+          style: 'destructive',
+          onPress: () => removeProject(project.id),
+        },
+      ],
+    );
+  }
+
+  function launchSession(project: ProjectDefinition, command: AiCommandKey): void {
     if (!selectedDevice) return;
     router.push({
       pathname: '/terminal',
       params: {
         action: 'open_project',
-        requestId: `${Date.now()}-${project.id}`,
+        requestId: `${Date.now()}-${project.id}-${command}`,
         url: buildWebSocketConnectionUrl(selectedDevice.wsUrl, selectedDevice.token),
         projectId: project.id,
         projectName: project.name,
         persistence: 'persisted',
+        command,
       },
     });
   }
@@ -156,7 +181,8 @@ export default function WorkspaceScreen() {
                 key={project.id}
                 project={project}
                 disabled={!isConnected}
-                onPress={() => openNewSession(project)}
+                onPress={() => requestProjectOpen(project)}
+                onLongPress={() => confirmRemoveProject(project)}
               />
             ))
           )}
@@ -186,6 +212,17 @@ export default function WorkspaceScreen() {
           </View>
         ) : null}
       </ScrollView>
+
+      <CommandPicker
+        visible={pickerProject !== null}
+        projectName={pickerProject?.name ?? null}
+        onCancel={() => setPickerProject(null)}
+        onSelect={(command) => {
+          const project = pickerProject;
+          setPickerProject(null);
+          if (project) launchSession(project, command);
+        }}
+      />
     </View>
   );
 }

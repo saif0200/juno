@@ -231,6 +231,98 @@ function deriveProjectId(prefix: string, projectPath: string, name: string): str
   return `${prefix}-${slugBase}-${hash}`;
 }
 
+export function buildProjectFromPath(
+  rawPath: string,
+  options: { favorite?: boolean; source?: ProjectSource } = {},
+): ProjectDefinition {
+  const resolvedPath = resolveConfiguredPath(rawPath);
+  const name = path.basename(resolvedPath) || resolvedPath;
+  const source = options.source ?? 'config';
+  return {
+    id: deriveProjectId(source === 'config' ? 'cwd' : 'discovered', resolvedPath, name),
+    name,
+    path: resolvedPath,
+    source,
+    isFavorite: options.favorite ?? true,
+    available: directoryExists(resolvedPath),
+  };
+}
+
+/**
+ * Append a project to an on-disk projects.json if its resolved path is not
+ * already present. Returns true if a write happened. Best-effort: parse errors
+ * leave the file untouched.
+ */
+interface PersistedProjectEntry {
+  id?: string;
+  name?: string;
+  path?: string;
+  favorite?: boolean;
+}
+
+interface PersistedProjectsFile {
+  projects?: PersistedProjectEntry[];
+  discovery?: unknown;
+}
+
+export function persistProjectIfNew(configPath: string, project: ProjectDefinition): boolean {
+  let existing: PersistedProjectsFile = { projects: [] };
+  if (fs.existsSync(configPath)) {
+    try {
+      existing = JSON.parse(fs.readFileSync(configPath, 'utf8')) as PersistedProjectsFile;
+    } catch {
+      return false;
+    }
+  }
+
+  const projects = Array.isArray(existing.projects) ? existing.projects : [];
+  const resolved = resolveConfiguredPath(project.path);
+  const alreadyTracked = projects.some((entry) => {
+    if (!entry || typeof entry.path !== 'string') return false;
+    return resolveConfiguredPath(entry.path) === resolved;
+  });
+  if (alreadyTracked) return false;
+
+  projects.push({
+    id: project.id,
+    name: project.name,
+    path: project.path,
+    favorite: project.isFavorite,
+  });
+
+  const next: PersistedProjectsFile = { ...existing, projects };
+  fs.writeFileSync(configPath, `${JSON.stringify(next, null, 2)}\n`, 'utf8');
+  return true;
+}
+
+/**
+ * Remove a project (by absolute path) from an on-disk projects.json. Returns
+ * true if a write happened. Best-effort: parse errors leave the file untouched.
+ */
+export function removeProjectByPath(configPath: string, projectPath: string): boolean {
+  if (!fs.existsSync(configPath)) return false;
+
+  let existing: PersistedProjectsFile;
+  try {
+    existing = JSON.parse(fs.readFileSync(configPath, 'utf8')) as PersistedProjectsFile;
+  } catch {
+    return false;
+  }
+
+  const projects = Array.isArray(existing.projects) ? existing.projects : [];
+  const target = resolveConfiguredPath(projectPath);
+  const next = projects.filter((entry) => {
+    if (!entry || typeof entry.path !== 'string') return true;
+    return resolveConfiguredPath(entry.path) !== target;
+  });
+
+  if (next.length === projects.length) return false;
+
+  const updated: PersistedProjectsFile = { ...existing, projects: next };
+  fs.writeFileSync(configPath, `${JSON.stringify(updated, null, 2)}\n`, 'utf8');
+  return true;
+}
+
 function discoverProjects(roots: string[], maxDepth: number): ProjectDefinition[] {
   const discovered: ProjectDefinition[] = [];
   const seenPaths = new Set<string>();

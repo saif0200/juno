@@ -8,12 +8,14 @@ type Props = {
   project: ProjectDefinition;
   disabled: boolean;
   onPress: () => void;
+  onLongPress?: () => void;
 };
 
-export function ProjectRow({ project, disabled, onPress }: Props) {
+export function ProjectRow({ project, disabled, onPress, onLongPress }: Props) {
   return (
     <Pressable
       onPress={onPress}
+      onLongPress={onLongPress}
       disabled={disabled}
       style={[workspaceStyles.fileRow, disabled && workspaceStyles.rowDisabled]}
     >

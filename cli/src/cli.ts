@@ -3,6 +3,7 @@ import { runDoctor } from './commands/doctor';
 import { runPair } from './commands/pair';
 import { runStatus } from './commands/status';
 import { runStop } from './commands/stop';
+import { runUninstall } from './commands/uninstall';
 
 const HELP_TEXT = `juno - mobile IDE relay
 
@@ -10,11 +11,12 @@ Usage:
   juno <command>
 
 Commands:
-  pair       Start the relay and print a pairing QR code (default).
-  status     Check whether a juno daemon is running.
-  stop       Stop the running juno daemon.
-  doctor     Diagnose environment (tmux, node, port, config).
-  help       Show this message.
+  pair         Start the relay and print a pairing QR code (default).
+  status       Check whether a juno daemon is running.
+  stop         Stop the running juno daemon.
+  doctor       Diagnose environment (tmux, node, port, config).
+  uninstall    Remove ~/.juno config and prompt next cleanup steps.
+  help         Show this message.
 
 Run \`juno pair\` from your project root, then scan the QR with the Juno app.
 `;
@@ -38,6 +40,9 @@ async function main(): Promise<void> {
       return;
     case 'doctor':
       await runDoctor();
+      return;
+    case 'uninstall':
+      await runUninstall();
       return;
     case 'help':
     case '--help':

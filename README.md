@@ -12,7 +12,7 @@ The architecture:
 ## Quick Start
 
 ```bash
-# clone + install everything (cli + mobile) and link `juno` globally
+# clone + install system tools, project deps, and link `juno` globally
 git clone https://github.com/juno-dev/juno && cd juno
 make install
 
@@ -21,6 +21,18 @@ juno pair          # prints a QR code
 
 # on your phone, open the Juno app and scan
 ```
+
+`make install` runs `make install-deps` first, which installs `cloudflared` and `tmux` for your OS:
+
+| OS | Package manager used |
+|---|---|
+| macOS | Homebrew (`brew install …`) |
+| Debian/Ubuntu | apt + cloudflared `.deb` |
+| Fedora/RHEL | dnf |
+| Arch | pacman |
+| Windows | unsupported natively - use WSL2 or run `winget install Cloudflare.cloudflared` and skip tmux |
+
+If you already have `cloudflared` and `tmux` on PATH, `install-deps` is a no-op.
 
 ## Repository Layout
 
@@ -121,11 +133,14 @@ npm run dev:notunnel # LAN-only
 
 ## Tunnel Setup
 
-`make cli-dev` (and `cd cli && npm run dev`) tries ngrok first, then falls back to cloudflared, then starts LAN-only if neither is available.
+`make cli-dev` (and `cd cli && npm run dev`) prefers `cloudflared` (zero-auth anonymous tunnels), falls back to `ngrok` if it's installed, and finally falls back to LAN-only.
+
+`make install` already installs `cloudflared` for you, so the default tunnel works out of the box. To opt into ngrok instead:
 
 ```bash
-brew install ngrok        # then: ngrok config add-authtoken <token>
-brew install cloudflared
+brew install ngrok                          # macOS
+ngrok config add-authtoken <YOUR_TOKEN>     # one-time, free signup at ngrok.com
+TUNNEL_PREFER=ngrok make cli-dev            # or export TUNNEL_PREFER=ngrok
 ```
 
 The tunnel URL is set as `PUBLIC_URL` and included in the pairing QR code so the phone can reach the cli from outside your local network.
@@ -140,8 +155,9 @@ The CLI loads `cli/.env` if present (set this when running from source). Variabl
 |---|---|---|
 | `PORT` | `3000` | relay port |
 | `PUBLIC_URL` | - | explicit public origin (set automatically by tunnel scripts) |
-| `NGROK_ENABLED` | `true` | set to `false` to skip ngrok in `npm run dev` |
+| `NGROK_ENABLED` | `true` | set to `false` to skip both tunnels in `npm run dev` |
 | `NGROK_AUTHTOKEN` | - | override for the ngrok CLI auth token |
+| `TUNNEL_PREFER` | `cloudflared` | tunnel preference: `cloudflared` or `ngrok` |
 | `PAIRING_SERVER_NAME` | hostname | name shown in pairing payloads and dashboard |
 | `PROJECTS_CONFIG_PATH` | (resolved, see below) | path to the project catalog |
 | `PROJECT_DISCOVERY_ENABLED` | `false` | enable shallow git repo discovery at startup |
@@ -266,9 +282,48 @@ not yet:
 - Cloud sync for sessions and devices
 - Daemonized `juno pair --background`
 
+## Uninstall
+
+```bash
+juno uninstall          # removes ~/.juno (saved projects, daemon pid)
+                        # prints next cleanup steps for the binary itself
+```
+
+Then remove the `juno` binary depending on how you installed:
+
+```bash
+npm uninstall -g @juno-dev/cli   # if installed via npm
+brew uninstall juno              # if installed via Homebrew
+# or, if you `npm link`-ed from source: cd juno/cli && npm unlink
+```
+
+Use `juno uninstall --yes` to skip the confirmation prompt.
+
+## Keeping `juno pair` Alive While You're Out
+
+`juno pair` runs in the foreground and dies if your laptop sleeps. When you want to leave the house and keep the relay reachable from your phone, wrap it in `caffeinate` (built into macOS):
+
+```bash
+caffeinate -d -i juno pair
+```
+
+- `-d` keeps the display from sleeping (also blocks system idle sleep)
+- `-i` blocks idle sleep specifically
+- Plug the laptop in. On battery, the lid still being open matters - close-and-go will sleep regardless.
+
+On Linux:
+
+```bash
+systemd-inhibit --what=idle:sleep juno pair
+```
+
+On Windows / WSL: keep the host machine awake via Power Settings; WSL can't override the Windows sleep timer.
+
+If you want this to survive reboots, run juno via launchd (macOS) or systemd (Linux). A dedicated `juno pair --background` daemon mode is on the roadmap but not shipped yet.
+
 ## Notes for macOS
 
-`node-pty` may need its bundled helper to be re-signed after `npm install`:
+`node-pty` ships pre-signed for some Apple Silicon variants but not all - if `juno pair` fails with `posix_spawnp failed`, the helper binary needs re-signing. `make install` runs the `sign-node-pty` Makefile target automatically; if you installed the cli outside the Makefile, run it manually:
 
 ```bash
 cd cli

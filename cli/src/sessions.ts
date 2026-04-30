@@ -101,11 +101,19 @@ export function createSession(
   options?: {
     clientTabId?: string;
     persistence?: TerminalPersistenceMode;
+    command?: string;
   },
 ): SessionRecord {
   const id = `session-${randomUUID()}`;
   const createdAt = now();
-  const spawned = spawnSessionPty(id, DEFAULT_COLS, DEFAULT_ROWS, project.path, project.id);
+  const spawned = spawnSessionPty(
+    id,
+    DEFAULT_COLS,
+    DEFAULT_ROWS,
+    project.path,
+    project.id,
+    options?.command,
+  );
   const processPty = spawned.pty;
 
   const session: SessionRecord = {
@@ -129,6 +137,7 @@ export function createSession(
     persistence: options?.persistence ?? 'persisted',
     backend: spawned.backend,
     sharedSessionName: spawned.sharedSessionName,
+    command: spawned.command,
   };
 
   processPty.onData((data: string) => {

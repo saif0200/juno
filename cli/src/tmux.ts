@@ -1,12 +1,6 @@
 import { execFileSync } from 'child_process';
 
-import {
-  CLAUDE_ARGS,
-  CLAUDE_COMMAND,
-  TMUX_AVAILABLE,
-  TMUX_BINARY,
-  TMUX_SESSION_PREFIX,
-} from './config';
+import { resolveAiCommand, TMUX_AVAILABLE, TMUX_BINARY, TMUX_SESSION_PREFIX } from './config';
 import { shellEscape } from './util';
 
 function toSessionSlug(value: string): string {
@@ -14,14 +8,16 @@ function toSessionSlug(value: string): string {
   return normalized.length > 0 ? normalized : 'workspace';
 }
 
-export function buildClaudeCommandLine(): string {
-  return [CLAUDE_COMMAND, ...CLAUDE_ARGS].map(shellEscape).join(' ');
+export function buildAiCommandLine(commandKey: string): string {
+  const { binary, args } = resolveAiCommand(commandKey);
+  return [binary, ...args].map(shellEscape).join(' ');
 }
 
-export function buildSharedTmuxSessionName(projectId: string): string {
+export function buildSharedTmuxSessionName(projectId: string, commandKey: string): string {
   const prefix = toSessionSlug(TMUX_SESSION_PREFIX);
   const projectSlug = toSessionSlug(projectId);
-  const candidate = `${prefix}-${projectSlug}`.slice(0, 64);
+  const commandSlug = toSessionSlug(commandKey);
+  const candidate = `${prefix}-${projectSlug}-${commandSlug}`.slice(0, 64);
   return candidate.length > 0 ? candidate : 'juno-workspace';
 }
 
@@ -35,15 +31,19 @@ export function tmuxHasSession(sessionName: string): boolean {
   }
 }
 
-export function ensureTmuxSession(sessionName: string, projectPath: string): void {
+export function ensureTmuxSession(
+  sessionName: string,
+  projectPath: string,
+  commandKey: string,
+): void {
   if (!TMUX_AVAILABLE || !TMUX_BINARY) {
     throw new Error('tmux bridge is not available.');
   }
 
   if (tmuxHasSession(sessionName)) return;
 
-  const commandLine = buildClaudeCommandLine();
-  console.log(`🧩 Creating shared tmux session ${sessionName} in ${projectPath}`);
+  const commandLine = buildAiCommandLine(commandKey);
+  console.log(`🧩 Creating shared tmux session ${sessionName} in ${projectPath} (${commandKey})`);
   execFileSync(
     TMUX_BINARY,
     ['new-session', '-d', '-s', sessionName, '-c', projectPath, `exec ${commandLine}`],
